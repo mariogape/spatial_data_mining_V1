@@ -23,11 +23,10 @@ from typing import List, Optional, Tuple
 # Every folder listed here will be processed. Output goes to
 # <input_folder>/<OUTPUT_SUBDIR>.
 INPUT_FOLDERS = [
-    r"D:\OpenPas Spatial Data\Forest Canopy Height\GEE_canopy_height\merged",
-    r"D:\OpenPas Spatial Data\Land Cover\2023",
-    r"D:\OpenPas Spatial Data\Precipitation annual mean\Raw",
-    r"D:\OpenPas Spatial Data\Snow\masked_scd",
-    r"D:\OpenPas Spatial Data\Temperature annual mean"
+    # r"D:\OpenPas Spatial Data\Land Cover\2023",
+    r"D:\OpenPas Spatial Data\Precipitation annual sum",
+    # r"D:\OpenPas Spatial Data\Snow\masked_scd",
+    # r"D:\OpenPas Spatial Data\Temperature annual mean"
     # Add more input folders as needed, e.g.:
     # r"D:\OpenPas Spatial Data\Forest Canopy Height\GEE_canopy_height\merged",
 ]
@@ -45,6 +44,9 @@ TARGET_CRS = "EPSG:3035"
 RESAMPLING = "near"
 
 OUTPUT_SUFFIX = "_cog"
+
+# Overwrite existing outputs when rerunning. If False, existing files are skipped.
+OVERWRITE = True
 
 # Command names (or full paths) for GDAL utilities
 GDAL_TRANSLATE = "gdal_translate"
@@ -79,7 +81,7 @@ def iter_rasters(folder: Path, exclude: Optional[Path] = None) -> List[Path]:
     return sorted(rasters)
 
 
-def build_base_args(target_crs: str, resampling: str) -> Tuple[str, List[str]]:
+def build_base_args(target_crs: str, resampling: str, overwrite: bool) -> Tuple[str, List[str]]:
     if target_crs:
         tool = GDAL_WARP
         args = [
@@ -104,6 +106,8 @@ def build_base_args(target_crs: str, resampling: str) -> Tuple[str, List[str]]:
             "-co",
             "BIGTIFF=IF_SAFER",
         ]
+    if overwrite:
+        args.insert(0, "-overwrite")
     return tool, args
 
 
@@ -120,6 +124,7 @@ def process_folder(
     input_dir: Path,
     output_dir: Path,
     output_suffix: str,
+    overwrite: bool,
 ) -> int:
     if not input_dir.is_dir():
         print(f"[ERROR] Input folder not found: {input_dir}")
@@ -135,6 +140,9 @@ def process_folder(
     for src in rasters:
         out_name = f"{src.stem}{output_suffix}.tif"
         dst = output_dir / out_name
+        if dst.exists() and not overwrite:
+            print(f"[SKIP] {dst.name} already exists (set OVERWRITE=True to rebuild).")
+            continue
         print(f"[INFO] {src.name} -> {dst.name}")
         rc = run_gdal_command(tool, base_args, src, dst)
         if rc != 0:
@@ -150,7 +158,7 @@ def main() -> int:
         print("        Use one of: float32, int16, int8 (or leave empty).")
         return 1
 
-    gdal_tool, gdal_args = build_base_args(TARGET_CRS, RESAMPLING)
+    gdal_tool, gdal_args = build_base_args(TARGET_CRS, RESAMPLING, OVERWRITE)
     if gdal_dtype:
         gdal_args.extend(["-ot", gdal_dtype])
 
@@ -165,7 +173,14 @@ def main() -> int:
     for raw_input in INPUT_FOLDERS:
         in_dir = Path(raw_input)
         out_dir = in_dir / OUTPUT_SUBDIR
-        rc = process_folder(gdal_tool, gdal_args, in_dir, out_dir, OUTPUT_SUFFIX)
+        rc = process_folder(
+            gdal_tool,
+            gdal_args,
+            in_dir,
+            out_dir,
+            OUTPUT_SUFFIX,
+            OVERWRITE,
+        )
         if rc != 0:
             return rc
 
