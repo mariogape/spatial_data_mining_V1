@@ -24,7 +24,7 @@ from typing import List, Optional, Tuple
 # <input_folder>/<OUTPUT_SUBDIR>.
 INPUT_FOLDERS = [
     # r"D:\OpenPas Spatial Data\Land Cover\2023",
-    r"D:\OpenPas Spatial Data\Precipitation annual sum",
+    r"D:\OpenPas Spatial Data\Remote sensing indexes\GEE_OpenLandMap-20251128T071600Z-1-001\GEE_OpenLandMap",
     # r"D:\OpenPas Spatial Data\Snow\masked_scd",
     # r"D:\OpenPas Spatial Data\Temperature annual mean"
     # Add more input folders as needed, e.g.:
