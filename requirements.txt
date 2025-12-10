@@ -1,0 +1,11 @@
+earthengine-api
+geopandas
+rasterio
+rioxarray
+xarray
+shapely
+pyproj
+pydantic
+click
+loguru
+google-cloud-storage

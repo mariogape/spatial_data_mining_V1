@@ -1,0 +1,13 @@
+job:
+  name: nd_indices_demo
+  aoi_path: data/aoi/sample.geojson
+  target_crs: EPSG:4326
+  resolution_m: 20
+  year: 2023
+  season: summer
+  variables: [ndvi, ndmi, msi]
+  storage:
+    kind: local_cog          # or gcs_cog
+    output_dir: data/outputs # used for local_cog
+    bucket: your-bucket      # used for gcs_cog
+    prefix: spatial/outputs  # optional
