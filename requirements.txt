@@ -10,3 +10,4 @@ loguru
 google-cloud-storage
 pyyaml
 ipywidgets
+ipyfilechooser

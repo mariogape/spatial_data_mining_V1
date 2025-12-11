@@ -26,7 +26,7 @@ class JobConfig(BaseModel):
     name: str
     aoi_path: str
     target_crs: str = Field(pattern=r"EPSG:\d+")
-    resolution_m: float
+    resolution_m: float | None
     year: int
     season: str
     variables: List[str]
@@ -37,6 +37,15 @@ class JobConfig(BaseModel):
     def variables_not_empty(cls, value: List[str]) -> List[str]:
         if not value:
             raise ValueError("variables list cannot be empty")
+        return value
+
+    @field_validator("resolution_m")
+    @classmethod
+    def resolution_positive_or_none(cls, value: float | None):
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("resolution_m must be positive when provided")
         return value
 
 

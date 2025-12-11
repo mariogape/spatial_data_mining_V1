@@ -23,6 +23,7 @@ def _notify(cb: ProgressCB, message: str) -> None:
 def _run(job_cfg, logging_cfg, progress_cb: ProgressCB = None) -> List[Dict[str, Any]]:
     setup_logging(logging_cfg)
     logger = logging.getLogger("orchestrator")
+    project_root = Path(__file__).resolve().parents[2]
 
     logger.info("Loaded job: %s", job_cfg.name)
     _notify(progress_cb, f"Loaded job: {job_cfg.name}")
@@ -31,7 +32,9 @@ def _run(job_cfg, logging_cfg, progress_cb: ProgressCB = None) -> List[Dict[str,
     geom_wgs84, geom_target = get_aoi_geometries(aoi_gdf, job_cfg.target_crs)
     _notify(progress_cb, "AOI loaded and reprojected.")
 
-    output_dir = Path(job_cfg.storage.output_dir or "data/outputs")
+    output_dir = Path(job_cfg.storage.output_dir or (project_root / "data/outputs"))
+    if not output_dir.is_absolute():
+        output_dir = project_root / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     results: List[Dict[str, Any]] = []
@@ -43,18 +46,23 @@ def _run(job_cfg, logging_cfg, progress_cb: ProgressCB = None) -> List[Dict[str,
         extractor = var_def["extractor"]
         transform_fn = var_def["transform"]
 
-        raw_path = extractor.extract(
+        raw_result = extractor.extract(
             aoi_geojson=geom_wgs84,
             year=job_cfg.year,
             season=job_cfg.season,
             resolution_m=job_cfg.resolution_m,
         )
+        # Allow extractors to optionally return (path, effective_resolution_m)
+        if isinstance(raw_result, tuple):
+            raw_path, effective_res = raw_result
+        else:
+            raw_path, effective_res = raw_result, job_cfg.resolution_m
         _notify(progress_cb, f"{var_name}: downloaded raw image {raw_path}")
 
         processed_path = transform_fn(
             src_path=raw_path,
             target_crs=job_cfg.target_crs,
-            resolution_m=job_cfg.resolution_m,
+            resolution_m=effective_res,
             aoi_geom_target=geom_target,
         )
         _notify(progress_cb, f"{var_name}: transformed to target CRS/resolution")

@@ -10,6 +10,7 @@ import requests
 import rasterio
 from rasterio.merge import merge as rio_merge
 from shapely.geometry import box, shape, mapping
+from spatial_data_mining.variables.metadata import get_variable_metadata
 
 SEASON_RANGES = {
     "spring": ("03-01", "05-31"),
@@ -17,6 +18,8 @@ SEASON_RANGES = {
     "autumn": ("09-01", "11-30"),
     "fall": ("09-01", "11-30"),
     "winter": ("12-01", "02-28"),
+    "annual": ("01-01", "12-31"),
+    "year": ("01-01", "12-31"),
 }
 
 TILE_DEG = 0.2  # fallback tile size in degrees when request is too large
@@ -53,16 +56,21 @@ class GEEExtractor:
             return image.select("B11").divide(image.select("B8")).rename("msi")
         raise ValueError(f"Unsupported index for GEEExtractor: {self.index}")
 
-    def _download_image(self, image: ee.Image, region_geojson: dict, resolution_m: float, name: str) -> Path:
-        url = image.getDownloadURL(
-            {
-                "scale": resolution_m,
-                "crs": "EPSG:4326",
-                "region": region_geojson,
-                "fileFormat": "GeoTIFF",
-                "filePerBand": False,
-            }
-        )
+    def _download_image(
+        self,
+        image: ee.Image,
+        region_geojson: dict,
+        resolution_m: float | None,
+        name: str,
+    ) -> Path:
+        params = {
+            "region": region_geojson,  # region in WGS84
+            "fileFormat": "GeoTIFF",
+            "filePerBand": False,
+        }
+        if resolution_m is not None:
+            params["scale"] = resolution_m  # units of the image's native projection
+        url = image.getDownloadURL(params)
         resp = requests.get(url, timeout=600)
         resp.raise_for_status()
 
@@ -130,11 +138,11 @@ class GEEExtractor:
         aoi_geojson: dict,
         year: int,
         season: str,
-        resolution_m: float,
-    ) -> Path:
+        resolution_m: float | None,
+    ) -> Tuple[Path, float | None]:
         """
         Download a seasonal median Sentinel-2 index image clipped to AOI.
-        Returns a local temporary GeoTIFF path (EPSG:4326).
+        Returns (local temporary GeoTIFF path, effective resolution in meters).
         """
         self._initialize()
         region = ee.Geometry(aoi_geojson)
@@ -146,13 +154,21 @@ class GEEExtractor:
             .filterDate(start_date, end_date)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
         )
-        image = collection.median()
-        image = self._apply_index(image)
+        base_image = collection.median()
+
+        # Apply index; projection will follow the image defaults.
+        image = self._apply_index(base_image)
 
         name = f"{self.index.lower()}_{year}_{season}"
 
+        # If resolution not provided, use the native scale from metadata.
+        meta = get_variable_metadata(self.index.lower())
+        native_scale = meta.get("native_resolution_m")
+        effective_res = resolution_m if resolution_m is not None else native_scale
+
         try:
-            return self._download_image(image, aoi_geojson, resolution_m, name)
+            path = self._download_image(image, aoi_geojson, effective_res, name)
+            return path, effective_res
         except Exception as exc:
             if "Total request size" not in str(exc):
                 raise
@@ -166,7 +182,13 @@ class GEEExtractor:
         tile_paths: List[Path] = []
         for idx, tile_region in enumerate(tile_regions):
             tile_name = f"{name}_tile{idx}"
-            tile_path = self._download_image(image, tile_region, resolution_m, tile_name)
+            tile_path = self._download_image(
+                image,
+                tile_region,
+                effective_res,
+                tile_name,
+            )
             tile_paths.append(tile_path)
 
-        return self._merge_tiles(tile_paths, name)
+        merged = self._merge_tiles(tile_paths, name)
+        return merged, effective_res

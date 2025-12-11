@@ -1,0 +1,25 @@
+VARIABLE_METADATA = {
+    "ndvi": {
+        "source": "COPERNICUS/S2_SR_HARMONIZED",
+        "native_resolution_m": 10,
+        "calculation": "normalizedDifference(['B8','B4'])",
+        "notes": "Uses Sentinel-2 NIR (B8) and red (B4) 10m bands.",
+    },
+    "ndmi": {
+        "source": "COPERNICUS/S2_SR_HARMONIZED",
+        "native_resolution_m": 20,
+        "calculation": "normalizedDifference(['B8','B11'])",
+        "notes": "Uses Sentinel-2 NIR (10m) and SWIR1 (20m); native grid is 20m.",
+    },
+    "msi": {
+        "source": "COPERNICUS/S2_SR_HARMONIZED",
+        "native_resolution_m": 20,
+        "calculation": "B11 / B8",
+        "notes": "Uses Sentinel-2 SWIR1 (20m) over NIR (10m); native grid is 20m.",
+    },
+}
+
+
+def get_variable_metadata(name: str) -> dict:
+    key = name.lower()
+    return VARIABLE_METADATA.get(key, {})
