@@ -20,7 +20,11 @@ def process_raster_to_target(
 
     data = rioxarray.open_rasterio(src_path, masked=True)
     data = data.squeeze()
-    data = data.rio.reproject(target_crs, resolution=resolution_m)
+    data = data.rio.reproject(
+        target_crs,
+        resolution=resolution_m,
+        resampling="bilinear",  # use string to avoid GDAL enum mismatch
+    )
     data = data.rio.clip([mapping(aoi_geom_target)], target_crs, drop=True)
     data.rio.to_raster(processed_path, compress="deflate")
 

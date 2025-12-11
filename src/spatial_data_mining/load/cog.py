@@ -13,7 +13,7 @@ def write_cog(src_path: Path, dst_path: Path) -> None:
         driver="COG",
         compress="deflate",
         blocksize=512,
-        overview_resampling=Resampling.average,
+        overview_resampling="nearest",
         bigtiff="IF_SAFER",
     )
     with rasterio.Env():

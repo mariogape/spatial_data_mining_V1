@@ -1,10 +1,15 @@
 import logging
 import tempfile
+import zipfile
+from io import BytesIO
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 import ee
 import requests
+import rasterio
+from rasterio.merge import merge as rio_merge
+from shapely.geometry import box, shape, mapping
 
 SEASON_RANGES = {
     "spring": ("03-01", "05-31"),
@@ -14,6 +19,7 @@ SEASON_RANGES = {
     "winter": ("12-01", "02-28"),
 }
 
+TILE_DEG = 0.2  # fallback tile size in degrees when request is too large
 
 def season_date_range(year: int, season: str) -> Tuple[str, str]:
     season_l = season.lower()
@@ -47,6 +53,78 @@ class GEEExtractor:
             return image.select("B11").divide(image.select("B8")).rename("msi")
         raise ValueError(f"Unsupported index for GEEExtractor: {self.index}")
 
+    def _download_image(self, image: ee.Image, region_geojson: dict, resolution_m: float, name: str) -> Path:
+        url = image.getDownloadURL(
+            {
+                "scale": resolution_m,
+                "crs": "EPSG:4326",
+                "region": region_geojson,
+                "fileFormat": "GeoTIFF",
+                "filePerBand": False,
+            }
+        )
+        resp = requests.get(url, timeout=600)
+        resp.raise_for_status()
+
+        tmp_dir = Path(tempfile.gettempdir())
+        tif_path = tmp_dir / f"{name}.tif"
+        content = resp.content
+        bio = BytesIO(content)
+        if zipfile.is_zipfile(bio):
+            bio.seek(0)
+            with zipfile.ZipFile(bio) as zf:
+                tif_members = [m for m in zf.namelist() if m.lower().endswith((".tif", ".tiff"))]
+                if not tif_members:
+                    raise ValueError("Downloaded archive does not contain a .tif")
+                with zf.open(tif_members[0]) as src, tif_path.open("wb") as dst:
+                    dst.write(src.read())
+        else:
+            if content[:4] not in (b"II*\x00", b"MM\x00*"):
+                raise ValueError(
+                    f"Download did not return a valid TIFF. Content-type: "
+                    f"{resp.headers.get('content-type')} ; first bytes: {content[:20]!r}"
+                )
+            tif_path.write_bytes(content)
+        return tif_path
+
+    def _tile_aoi(self, aoi_geojson: dict) -> List[dict]:
+        geom = shape(aoi_geojson)
+        minx, miny, maxx, maxy = geom.bounds
+        tiles = []
+        x = minx
+        while x < maxx:
+            y = miny
+            while y < maxy:
+                tile = box(x, y, min(x + TILE_DEG, maxx), min(y + TILE_DEG, maxy))
+                inter = geom.intersection(tile)
+                if not inter.is_empty:
+                    tiles.append(mapping(inter))
+                y += TILE_DEG
+            x += TILE_DEG
+        return tiles
+
+    def _merge_tiles(self, tile_paths: List[Path], name: str) -> Path:
+        tmp_dir = Path(tempfile.gettempdir())
+        out_path = tmp_dir / f"{name}_merged.tif"
+        srcs = [rasterio.open(p) for p in tile_paths]
+        try:
+            mosaic, transform = rio_merge(srcs)
+            meta = srcs[0].meta.copy()
+            meta.update(
+                {
+                    "height": mosaic.shape[1],
+                    "width": mosaic.shape[2],
+                    "transform": transform,
+                    "count": mosaic.shape[0],
+                }
+            )
+            with rasterio.open(out_path, "w", **meta) as dst:
+                dst.write(mosaic)
+        finally:
+            for s in srcs:
+                s.close()
+        return out_path
+
     def extract(
         self,
         aoi_geojson: dict,
@@ -71,17 +149,24 @@ class GEEExtractor:
         image = collection.median()
         image = self._apply_index(image)
 
-        url = image.getDownloadURL(
-            {
-                "scale": resolution_m,
-                "crs": "EPSG:4326",
-                "region": region,
-                "fileFormat": "GeoTIFF",
-            }
-        )
+        name = f"{self.index.lower()}_{year}_{season}"
 
-        temp_file = Path(tempfile.gettempdir()) / f"{self.index.lower()}_{year}_{season}.tif"
-        resp = requests.get(url, timeout=600)
-        resp.raise_for_status()
-        temp_file.write_bytes(resp.content)
-        return temp_file
+        try:
+            return self._download_image(image, aoi_geojson, resolution_m, name)
+        except Exception as exc:
+            if "Total request size" not in str(exc):
+                raise
+            self.logger.info("Falling back to tiling due to request size limit.")
+
+        # Tile the AOI in WGS84 and merge tiles locally
+        tile_regions = self._tile_aoi(aoi_geojson)
+        if not tile_regions:
+            raise ValueError("AOI produced no tiles.")
+
+        tile_paths: List[Path] = []
+        for idx, tile_region in enumerate(tile_regions):
+            tile_name = f"{name}_tile{idx}"
+            tile_path = self._download_image(image, tile_region, resolution_m, tile_name)
+            tile_paths.append(tile_path)
+
+        return self._merge_tiles(tile_paths, name)
