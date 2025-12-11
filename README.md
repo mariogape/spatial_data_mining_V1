@@ -10,42 +10,46 @@ Config-driven geospatial ETL for extracting indices from Google Earth Engine (an
 - Authenticate Google Earth Engine (first time): `earthengine authenticate`
 - Optional GCS auth: `gcloud auth application-default login` or set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`
 
-## Quickstart (UI-driven)
-- Prereqs: Python 3.10+ (recommended), `earthengine-api`, `streamlit`; optional `gcloud` for GCS uploads.
-- Setup: `./scripts/setup_env.sh` then activate venv (`source .venv/bin/activate` on Unix/macOS, `.\\.venv\\Scripts\\Activate.ps1` on Windows).
-- Authenticate GEE (first time): `earthengine authenticate`.
+## Quickstart (Notebook UI)
+- Prereqs: Python 3.10+, `earthengine-api`, `ipywidgets`; optional `gcloud` for GCS uploads.
+- Setup: `./scripts/setup_env.sh` then activate the venv (`source .venv/bin/activate` on Unix/macOS, `.\\.venv\\Scripts\\Activate.ps1` on Windows).
+- Authenticate GEE once: `earthengine authenticate`.
 - Optional GCS auth: `gcloud auth application-default login` or set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`.
-- Prepare AOI: place your AOI file in `data/aoi/` (GeoJSON or Shapefile with a defined CRS).
-- Launch UI: `streamlit run scripts/ui_runner.py`
-- In the browser, select AOI, CRS, resolution, year/season, variables (ndvi/ndmi/msi), storage (local/GCS), then click “Run pipeline.”
-- Outputs: COGs written locally to `data/outputs/` (and uploaded to GCS if selected).
+- Prepare AOI: place your GeoJSON/Shapefile (with CRS) in `data/aoi/`.
+- Launch Jupyter/Lab and open `notebooks/pipeline_ui.ipynb`.
+- Cell 1: run to ensure paths are set (optionally run `!earthengine authenticate` inside).
+- Cell 2: run to display the widget UI (AOI/CRS/resolution/year/season/variables/storage). Click “Run pipeline” to execute.
+- Outputs: COGs written to `data/outputs/` (and uploaded to GCS if selected).
 
 ## How to use the pipeline (step-by-step)
-1) Environment: run `./scripts/setup_env.sh` and activate the venv.  
-2) Auth: `earthengine authenticate`; for GCS uploads, ensure ADC via `gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`.  
-3) AOI: drop a GeoJSON/Shapefile with CRS into `data/aoi/`.  
-4) Run UI: `streamlit run scripts/ui_runner.py`  
-5) Configure in UI:
-   - Pick AOI from the dropdown (or enter a custom path).  
-   - Choose CRS (EPSG:3035, 4326, 3857, 25829, 25830, 25831) and resolution (m).  
-   - Set year and season (used for filtering and naming).  
-   - Select variables: ndvi, ndmi, msi.  
-   - Choose storage: local COG (with output dir) or GCS (bucket/prefix).  
-6) Execute: click “Run pipeline.” The UI shows progress and outputs.  
+1) Environment: run `./scripts/setup_env.sh`, activate `.venv`.  
+2) Auth: run `earthengine authenticate` (and, if using GCS, ensure ADC by `gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`).  
+3) AOI prep: copy your AOI file to `data/aoi/`.  
+4) Launch notebook: `jupyter lab notebooks/pipeline_ui.ipynb` (or open via VS Code).  
+5) Cell 1: executes path setup + optional authentication reminder.  
+6) Cell 2 (UI):
+   - Select AOI (dropdown lists files in `data/aoi/`, or enter a custom path).  
+   - Choose CRS (EPSG:3035, 4326, 3857, 25829, 25830, 25831) and pixel resolution.  
+   - Set year + season.  
+   - Pick variables: ndvi, ndmi, msi (any combo).  
+   - Storage: local COG directory or GCS bucket/prefix.  
+   - Click “Run pipeline” to execute (logs/outputs shown below the button).  
 7) Verify outputs:
-   - Local: `data/outputs/<name>_<variable>_<year>_<season>_<crs>.tif`
-   - GCS: `gs://<bucket>/<prefix>/...` if enabled.
+   - Local: `data/outputs/<job>_<var>_<year>_<season>_<crs>.tif`.  
+   - GCS: `gs://<bucket>/<prefix>/...` when using `gcs_cog`.  
+8) Iterate: adjust UI selections and rerun as needed.
 
-## What you configure (in the UI)
-- AOI file: pick from `data/aoi/` or enter a path (GeoJSON/Shapefile; CRS auto-detected).
-- CRS: choose EPSG:3035, 4326, 3857, 25829, 25830, 25831.
-- Resolution: target pixel size in meters.
-- Time: year and season (for filtering and naming).
-- Variables: any of ndvi, ndmi, msi.
-- Storage: local COG output dir, or GCS bucket/prefix if uploading.
+## What you configure (in the notebook UI)
+- AOI file: pick from `data/aoi/` or enter a path (CRS auto-detected).
+- CRS: EPSG:3035, 4326, 3857, 25829, 25830, 25831.
+- Resolution: target pixel size (meters).
+- Time: acquisition `year` and descriptive `season`.
+- Variables: ND-based indices (ndvi, ndmi, msi).
+- Storage: local COG output directory or GCS bucket/prefix.
 
 ## Repo structure (key folders)
-- `scripts/` – setup script and Streamlit UI runner.
+- `scripts/` – setup script (venv+deps).
+- `notebooks/` – `pipeline_ui.ipynb` notebook UI for running jobs.
 - `config/` – defaults (`base.yaml`) and per-job configs (`jobs/*.yaml`).
 - `src/spatial_data_mining/` – library code: orchestrator, extractors, transforms, loaders, utils, variable registry.
 - `data/` – AOIs (`aoi/`) and outputs (`outputs/`).

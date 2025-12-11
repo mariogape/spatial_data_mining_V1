@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import yaml
-from pydantic import BaseModel, Field, root_validator, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class StorageConfig(BaseModel):
@@ -11,33 +13,31 @@ class StorageConfig(BaseModel):
     bucket: str | None = None
     prefix: str | None = None
 
-    @root_validator
-    def validate_storage(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        kind = values.get("kind")
-        output_dir = values.get("output_dir")
-        bucket = values.get("bucket")
-        if kind == "local_cog" and not output_dir:
+    @model_validator(mode="after")
+    def validate_storage(cls, model: "StorageConfig") -> "StorageConfig":
+        if model.kind == "local_cog" and not model.output_dir:
             raise ValueError("storage.output_dir is required for kind=local_cog")
-        if kind == "gcs_cog" and not bucket:
+        if model.kind == "gcs_cog" and not model.bucket:
             raise ValueError("storage.bucket is required for kind=gcs_cog")
-        return values
+        return model
 
 
 class JobConfig(BaseModel):
     name: str
     aoi_path: str
-    target_crs: str = Field(regex=r"EPSG:\d+")
+    target_crs: str = Field(pattern=r"EPSG:\d+")
     resolution_m: float
     year: int
     season: str
     variables: List[str]
     storage: StorageConfig
 
-    @validator("variables")
-    def variables_not_empty(cls, v: List[str]) -> List[str]:
-        if not v:
+    @field_validator("variables")
+    @classmethod
+    def variables_not_empty(cls, value: List[str]) -> List[str]:
+        if not value:
             raise ValueError("variables list cannot be empty")
-        return v
+        return value
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:

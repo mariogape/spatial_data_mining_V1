@@ -9,4 +9,4 @@ pydantic
 loguru
 google-cloud-storage
 pyyaml
-streamlit
+ipywidgets

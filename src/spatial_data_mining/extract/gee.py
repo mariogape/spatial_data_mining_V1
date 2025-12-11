@@ -63,7 +63,7 @@ class GEEExtractor:
         start_date, end_date = season_date_range(year, season)
 
         collection = (
-            ee.ImageCollection("COPERNICUS/S2_SR")
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
             .filterBounds(region)
             .filterDate(start_date, end_date)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
