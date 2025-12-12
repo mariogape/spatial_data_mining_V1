@@ -87,18 +87,11 @@ class AlphaEarthExtractor:
         for p in tile_paths:
             with rasterio.open(p) as src:
                 transform = src.transform
-                if transform.e < 0:
-                    # Flip to ensure positive pixel height for merging
+                if transform.e > 0:
+                    # Flip south-up rasters to north-up (negative pixel height) for merging
                     data = src.read()
                     profile = src.profile
-                    new_transform = Affine(
-                        transform.a,
-                        transform.b,
-                        transform.c,
-                        transform.d,
-                        -transform.e,
-                        transform.f + (src.height - 1) * transform.e,
-                    )
+                    new_transform = transform * Affine.translation(0, src.height) * Affine.scale(1, -1)
                     data_flipped = data[:, ::-1, :]
                     profile.update(transform=new_transform)
                     fixed_path = tmp_dir / f"{p.stem}_upright.tif"

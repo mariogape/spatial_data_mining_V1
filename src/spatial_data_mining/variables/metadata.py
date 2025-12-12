@@ -28,10 +28,10 @@ VARIABLE_METADATA = {
     },
     "alpha_earth": {
         "source": "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL",
-        "native_resolution_m": 30,
+        "native_resolution_m": 10,
         "calculation": "Annual Alpha Earth embedding raster",
         "notes": "Annual embeddings produced by Google AlphaEarth; single yearly composite.",
-        "temporal_coverage": {"start_year": 2015, "end_year": "present"},
+        "temporal_coverage": {"start_year": 2017, "end_year": "present"},
         "temporal_resolution": "annual",
         "season_options": ["static"],
     },
