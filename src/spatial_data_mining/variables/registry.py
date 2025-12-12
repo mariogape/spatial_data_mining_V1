@@ -1,10 +1,12 @@
 from spatial_data_mining.extract.gee import GEEExtractor
+from spatial_data_mining.extract.alpha_earth import AlphaEarthExtractor
 from spatial_data_mining.transform.raster_ops import process_raster_to_target
 
 VARIABLES = {
     "ndvi": {"extractor": GEEExtractor("NDVI"), "transform": process_raster_to_target},
     "ndmi": {"extractor": GEEExtractor("NDMI"), "transform": process_raster_to_target},
     "msi": {"extractor": GEEExtractor("MSI"), "transform": process_raster_to_target},
+    "alpha_earth": {"extractor": AlphaEarthExtractor(), "transform": process_raster_to_target},
 }
 
 
