@@ -3,7 +3,7 @@ import tempfile
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from typing import Tuple, List
+from typing import Callable, List, Optional, Tuple
 
 import ee
 import requests
@@ -13,13 +13,20 @@ from shapely.geometry import box, shape, mapping
 from spatial_data_mining.variables.metadata import get_variable_metadata
 from affine import Affine
 
-TILE_DEG = 0.05  # fallback tile size in degrees when request is too large for AlphaEarth (dense, many bands)
+# Starting tile size (degrees) for AlphaEarth tiling and the smallest fallback size.
+TILE_DEG = 0.05
+MIN_TILE_DEG = 0.005
 
 
 class AlphaEarthExtractor:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.collection_id = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
+
+    @staticmethod
+    def _notify(cb: Optional[Callable[[str], None]], message: str) -> None:
+        if cb:
+            cb(message)
 
     def _initialize(self) -> None:
         try:
@@ -29,7 +36,14 @@ class AlphaEarthExtractor:
             ee.Authenticate()
             ee.Initialize()
 
-    def _download_image(self, image: ee.Image, region_geojson: dict, scale: float, name: str) -> Path:
+    def _download_image(
+        self,
+        image: ee.Image,
+        region_geojson: dict,
+        scale: float,
+        name: str,
+        tmp_dir: Path,
+    ) -> Path:
         url = image.getDownloadURL(
             {
                 "region": region_geojson,
@@ -43,7 +57,6 @@ class AlphaEarthExtractor:
             # Include response text to aid detection of size-limit errors.
             raise RuntimeError(f"Download failed ({resp.status_code}): {resp.text}")
 
-        tmp_dir = Path(tempfile.gettempdir())
         tif_path = tmp_dir / f"{name}.tif"
         content = resp.content
         bio = BytesIO(content)
@@ -64,7 +77,7 @@ class AlphaEarthExtractor:
             tif_path.write_bytes(content)
         return tif_path
 
-    def _tile_aoi(self, aoi_geojson: dict) -> List[dict]:
+    def _tile_aoi(self, aoi_geojson: dict, tile_deg: float) -> List[dict]:
         geom = shape(aoi_geojson)
         minx, miny, maxx, maxy = geom.bounds
         tiles = []
@@ -72,16 +85,15 @@ class AlphaEarthExtractor:
         while x < maxx:
             y = miny
             while y < maxy:
-                tile = box(x, y, min(x + TILE_DEG, maxx), min(y + TILE_DEG, maxy))
+                tile = box(x, y, min(x + tile_deg, maxx), min(y + tile_deg, maxy))
                 inter = geom.intersection(tile)
                 if not inter.is_empty:
                     tiles.append(mapping(inter))
-                y += TILE_DEG
-            x += TILE_DEG
+                y += tile_deg
+            x += tile_deg
         return tiles
 
-    def _merge_tiles(self, tile_paths: List[Path], name: str) -> Path:
-        tmp_dir = Path(tempfile.gettempdir())
+    def _merge_tiles(self, tile_paths: List[Path], name: str, tmp_dir: Path) -> Path:
         out_path = tmp_dir / f"{name}_merged.tif"
         prepared_paths: List[Path] = []
         for p in tile_paths:
@@ -126,12 +138,17 @@ class AlphaEarthExtractor:
         year: int,
         season: str,  # ignored for annual data
         resolution_m: float | None,
+        temp_dir: str | Path | None = None,
+        progress_cb: Optional[Callable[[str], None]] = None,
     ) -> Tuple[Path, float | None]:
         """
         Download annual AlphaEarth embeddings for the given year.
         Returns (path, effective resolution).
         """
         self._initialize()
+        # Keep intermediates on the caller-specified disk to avoid filling /tmp.
+        tmp_dir = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
+        tmp_dir.mkdir(parents=True, exist_ok=True)
         region = ee.Geometry(aoi_geojson)
 
         start = f"{year}-01-01"
@@ -156,22 +173,53 @@ class AlphaEarthExtractor:
 
         name = f"alphaearth_{year}"
         try:
-            path = self._download_image(image, aoi_geojson, scale, name)
+            path = self._download_image(image, aoi_geojson, scale, name, tmp_dir)
+            self._notify(progress_cb, f"{name}: downloaded full AOI without tiling")
             return path, scale
         except Exception as exc:
             if "total request size" not in str(exc).lower():
                 raise
             self.logger.info("Falling back to tiling due to request size limit.")
 
-        tile_regions = self._tile_aoi(aoi_geojson)
-        if not tile_regions:
-            raise ValueError("AOI produced no tiles.")
+        tile_deg = TILE_DEG
+        last_exc: Exception | None = None
+        while tile_deg >= MIN_TILE_DEG:
+            tile_regions = self._tile_aoi(aoi_geojson, tile_deg)
+            if not tile_regions:
+                raise ValueError("AOI produced no tiles.")
 
-        tile_paths: List[Path] = []
-        for idx, tile_region in enumerate(tile_regions):
-            tile_name = f"{name}_tile{idx}"
-            tile_path = self._download_image(image, tile_region, scale, tile_name)
-            tile_paths.append(tile_path)
+            total_tiles = len(tile_regions)
+            self._notify(
+                progress_cb,
+                f"{name}: tiling AOI into {total_tiles} tile(s) at {tile_deg:.3f}°",
+            )
 
-        merged = self._merge_tiles(tile_paths, name)
-        return merged, scale
+            tile_paths: List[Path] = []
+            for idx, tile_region in enumerate(tile_regions):
+                tile_name = f"{name}_tile{idx}"
+                try:
+                    tile_path = self._download_image(image, tile_region, scale, tile_name, tmp_dir)
+                except Exception as exc:
+                    if "total request size" in str(exc).lower():
+                        last_exc = exc
+                        self.logger.info(
+                            "Tile %s too large at %.3f°, will retry with smaller tiles.",
+                            tile_name,
+                            tile_deg,
+                        )
+                        break
+                    raise
+                tile_paths.append(tile_path)
+                self._notify(progress_cb, f"{name}: downloaded tile {idx + 1}/{total_tiles}")
+
+            if len(tile_paths) == total_tiles:
+                merged = self._merge_tiles(tile_paths, name, tmp_dir)
+                self._notify(progress_cb, f"{name}: merged {total_tiles} tiles")
+                return merged, scale
+
+            tile_deg /= 2
+            self._notify(progress_cb, f"{name}: retrying with smaller tiles ({tile_deg:.3f}°)")
+
+        raise RuntimeError(
+            f"Could not download {name}: request still too large even after tiling"
+        ) from last_exc

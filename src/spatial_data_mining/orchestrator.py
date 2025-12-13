@@ -51,6 +51,8 @@ def _run(job_cfg, logging_cfg, progress_cb: ProgressCB = None) -> List[Dict[str,
             year=job_cfg.year,
             season=job_cfg.season,
             resolution_m=job_cfg.resolution_m,
+            temp_dir=output_dir,
+            progress_cb=progress_cb,
         )
         # Allow extractors to optionally return (path, effective_resolution_m)
         if isinstance(raw_result, tuple):
