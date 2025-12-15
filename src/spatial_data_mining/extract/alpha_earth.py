@@ -9,9 +9,11 @@ import ee
 import requests
 import rasterio
 from rasterio.merge import merge as rio_merge
+from rasterio.io import MemoryFile
 from shapely.geometry import box, shape, mapping
 from spatial_data_mining.variables.metadata import get_variable_metadata
 from affine import Affine
+import numpy as np
 
 # Starting tile size (degrees) for AlphaEarth tiling and the smallest fallback size.
 TILE_DEG = 0.05
@@ -117,10 +119,32 @@ class AlphaEarthExtractor:
                     prepared_paths.append(p)
 
         srcs = [rasterio.open(p) for p in prepared_paths]
+        def merge_single_band(band_index: int):
+            """
+            Merge one band at a time using temporary single-band datasets.
+            """
+            memfiles: List[MemoryFile] = []
+            band_datasets = []
+            try:
+                for src in srcs:
+                    band_data = src.read(band_index, out_dtype=merge_dtype)
+                    profile = src.profile.copy()
+                    profile.update(count=1, dtype=merge_dtype)
+                    mf = MemoryFile()
+                    ds = mf.open(**profile)
+                    ds.write(band_data, 1)
+                    memfiles.append(mf)
+                    band_datasets.append(ds)
+                mosaic, transform = rio_merge(band_datasets, dtype=merge_dtype)
+                return mosaic, transform
+            finally:
+                for ds in band_datasets:
+                    ds.close()
+                for mf in memfiles:
+                    mf.close()
+
         try:
-            # Merge one band at a time to stay within low-RAM machines (~120MB per band).
-            first_band = 1
-            first_mosaic, transform = rio_merge(srcs, indexes=first_band, dtype=merge_dtype)
+            first_mosaic, transform = merge_single_band(1)
             meta = srcs[0].meta.copy()
             meta.update(
                 {
@@ -133,10 +157,12 @@ class AlphaEarthExtractor:
             )
 
             with rasterio.open(out_path, "w", **meta) as dst:
-                dst.write(first_mosaic, first_band)
+                dst.write(np.squeeze(first_mosaic, axis=0), 1)
                 for band in range(2, srcs[0].count + 1):
-                    mosaic, _ = rio_merge(srcs, indexes=band, dtype=merge_dtype)
-                    dst.write(mosaic, band)
+                    mosaic, t = merge_single_band(band)
+                    if t != transform:
+                        raise ValueError("Band transforms differ during merge; aborting.")
+                    dst.write(np.squeeze(mosaic, axis=0), band)
         finally:
             for s in srcs:
                 s.close()

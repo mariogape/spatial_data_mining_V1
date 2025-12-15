@@ -18,7 +18,7 @@ Config-driven geospatial ETL for extracting indices from Google Earth Engine (an
 - Prepare AOI: place your GeoJSON/Shapefile (with CRS) in `data/aoi/`.
 - Launch Jupyter/Lab and open `notebooks/pipeline_ui.ipynb`.
 - Cell 1: run to ensure paths are set (optionally run `!earthengine authenticate` inside).
-- Cell 2: run to display the widget UI (AOI/CRS/resolution/year/season/variables/storage). Click “Run pipeline” to execute.
+- Cell 2: run to display the widget UI (AOI/CRS/resolution/year(s)/season/variables/storage). Click “Run pipeline” to execute.
 - Outputs: COGs written to `data/outputs/` (and uploaded to GCS if selected).
 
 ## How to use the pipeline (step-by-step)
@@ -30,7 +30,7 @@ Config-driven geospatial ETL for extracting indices from Google Earth Engine (an
 6) Cell 2 (UI):
    - Select AOI (dropdown lists files in `data/aoi/`, or enter a custom path).  
    - Choose CRS (EPSG:3035, 4326, 3857, 25829, 25830, 25831) and pixel resolution.  
-   - Set year + season.  
+   - Set year(s) + season (multi-select supported).  
    - Pick variables: ndvi, ndmi, msi (any combo).  
    - Storage: local COG directory or GCS bucket/prefix.  
    - Click “Run pipeline” to execute (logs/outputs shown below the button).  
@@ -43,7 +43,7 @@ Config-driven geospatial ETL for extracting indices from Google Earth Engine (an
 - AOI file: pick from `data/aoi/` or enter a path (CRS auto-detected).
 - CRS: EPSG:3035, 4326, 3857, 25829, 25830, 25831.
 - Resolution: target pixel size (meters).
-- Time: acquisition `year` and descriptive `season`.
+- Time: acquisition `year` (or multiple `years`) and descriptive `season`.
 - Variables: ND-based indices (ndvi, ndmi, msi).
 - Storage: local COG output directory or GCS bucket/prefix.
 

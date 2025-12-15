@@ -39,59 +39,64 @@ def _run(job_cfg, logging_cfg, progress_cb: ProgressCB = None) -> List[Dict[str,
 
     results: List[Dict[str, Any]] = []
 
-    for var_name in job_cfg.variables:
-        logger.info("Processing variable: %s", var_name)
-        _notify(progress_cb, f"Processing {var_name}...")
-        var_def = get_variable(var_name)
-        extractor = var_def["extractor"]
-        transform_fn = var_def["transform"]
+    years = job_cfg.years or ([] if job_cfg.year is None else [job_cfg.year])
 
-        raw_result = extractor.extract(
-            aoi_geojson=geom_wgs84,
-            year=job_cfg.year,
-            season=job_cfg.season,
-            resolution_m=job_cfg.resolution_m,
-            temp_dir=output_dir,
-            progress_cb=progress_cb,
-        )
-        # Allow extractors to optionally return (path, effective_resolution_m)
-        if isinstance(raw_result, tuple):
-            raw_path, effective_res = raw_result
-        else:
-            raw_path, effective_res = raw_result, job_cfg.resolution_m
-        _notify(progress_cb, f"{var_name}: downloaded raw image {raw_path}")
+    for year in years:
+        for var_name in job_cfg.variables:
+            logger.info("Processing variable %s for year %s", var_name, year)
+            _notify(progress_cb, f"Processing {var_name} ({year})...")
+            var_def = get_variable(var_name)
+            extractor = var_def["extractor"]
+            transform_fn = var_def["transform"]
 
-        processed_path = transform_fn(
-            src_path=raw_path,
-            target_crs=job_cfg.target_crs,
-            resolution_m=effective_res,
-            aoi_geom_target=geom_target,
-        )
-        _notify(progress_cb, f"{var_name}: transformed to target CRS/resolution")
+            raw_result = extractor.extract(
+                aoi_geojson=geom_wgs84,
+                year=year,
+                season=job_cfg.season,
+                resolution_m=job_cfg.resolution_m,
+                temp_dir=output_dir,
+                progress_cb=progress_cb,
+            )
+            # Allow extractors to optionally return (path, effective_resolution_m)
+            if isinstance(raw_result, tuple):
+                raw_path, effective_res = raw_result
+            else:
+                raw_path, effective_res = raw_result, job_cfg.resolution_m
+            _notify(progress_cb, f"{var_name} ({year}): downloaded raw image {raw_path}")
 
-        filename = (
-            f"{job_cfg.name}_{var_name}_{job_cfg.year}_{job_cfg.season}_"
-            f"{job_cfg.target_crs.replace(':', '')}.tif"
-        )
-        local_output = output_dir / filename
-        write_cog(processed_path, local_output)
-        _notify(progress_cb, f"{var_name}: wrote COG {local_output}")
+            processed_path = transform_fn(
+                src_path=raw_path,
+                target_crs=job_cfg.target_crs,
+                resolution_m=effective_res,
+                aoi_geom_target=geom_target,
+            )
+            _notify(progress_cb, f"{var_name} ({year}): transformed to target CRS/resolution")
 
-        gcs_uri = None
-        if job_cfg.storage.kind == "gcs_cog":
-            gcs_uri = upload_to_gcs(local_output, job_cfg.storage.bucket, job_cfg.storage.prefix)
-            logger.info("Uploaded to GCS: %s", gcs_uri)
-            _notify(progress_cb, f"{var_name}: uploaded to {gcs_uri}")
+            filename = (
+                f"{job_cfg.name}_{var_name}_{year}_{job_cfg.season}_"
+                f"{job_cfg.target_crs.replace(':', '')}.tif"
+            )
+            local_output = output_dir / filename
+            write_cog(processed_path, local_output)
+            _notify(progress_cb, f"{var_name} ({year}): wrote COG {local_output}")
 
-        results.append(
-            {
-                "variable": var_name,
-                "local_path": str(local_output),
-                "gcs_uri": gcs_uri,
-            }
-        )
-        logger.info("Finished variable: %s", var_name)
-        _notify(progress_cb, f"Finished {var_name}")
+            gcs_uri = None
+            if job_cfg.storage.kind == "gcs_cog":
+                gcs_uri = upload_to_gcs(local_output, job_cfg.storage.bucket, job_cfg.storage.prefix)
+                logger.info("Uploaded to GCS: %s", gcs_uri)
+                _notify(progress_cb, f"{var_name} ({year}): uploaded to {gcs_uri}")
+
+            results.append(
+                {
+                    "variable": var_name,
+                    "year": year,
+                    "season": job_cfg.season,
+                    "local_path": str(local_output),
+                    "gcs_uri": gcs_uri,
+                }
+            )
+            logger.info("Finished variable %s for year %s", var_name, year)
+            _notify(progress_cb, f"Finished {var_name} ({year})")
 
     logger.info("Job %s completed. Outputs: %s", job_cfg.name, results)
     _notify(progress_cb, "Job completed.")

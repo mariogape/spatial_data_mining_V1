@@ -27,7 +27,8 @@ class JobConfig(BaseModel):
     aoi_path: str
     target_crs: str = Field(pattern=r"EPSG:\d+")
     resolution_m: float | None
-    year: int
+    year: int | None = None
+    years: List[int] | None = None
     season: str
     variables: List[str]
     storage: StorageConfig
@@ -47,6 +48,30 @@ class JobConfig(BaseModel):
         if value <= 0:
             raise ValueError("resolution_m must be positive when provided")
         return value
+
+    @model_validator(mode="after")
+    def normalize_years(cls, model: "JobConfig") -> "JobConfig":
+        years_combined: List[int] = []
+        if model.years:
+            years_combined.extend(int(y) for y in model.years)
+        if model.year is not None:
+            years_combined.insert(0, int(model.year))
+
+        if not years_combined:
+            raise ValueError("Provide at least one year (year or years)")
+        if any(y <= 0 for y in years_combined):
+            raise ValueError("Years must be positive integers")
+
+        unique_years: List[int] = []
+        seen: set[int] = set()
+        for y in years_combined:
+            if y not in seen:
+                unique_years.append(y)
+                seen.add(y)
+
+        model.year = unique_years[0]
+        model.years = unique_years
+        return model
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
