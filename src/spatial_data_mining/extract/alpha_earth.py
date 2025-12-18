@@ -12,11 +12,12 @@ from rasterio.merge import merge as rio_merge
 from rasterio.io import MemoryFile
 from shapely.geometry import box, shape, mapping
 from spatial_data_mining.variables.metadata import get_variable_metadata
+from spatial_data_mining.utils.cancellation import check_cancelled
 from affine import Affine
 import numpy as np
 
 # Starting tile size (degrees) for AlphaEarth tiling and the smallest fallback size.
-TILE_DEG = 0.05
+TILE_DEG = 0.2
 MIN_TILE_DEG = 0.005
 
 
@@ -95,13 +96,20 @@ class AlphaEarthExtractor:
             x += tile_deg
         return tiles
 
-    def _merge_tiles(self, tile_paths: List[Path], name: str, tmp_dir: Path) -> Path:
+    def _merge_tiles(
+        self,
+        tile_paths: List[Path],
+        name: str,
+        tmp_dir: Path,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> Path:
         out_path = tmp_dir / f"{name}_merged.tif"
         merge_dtype = "float32"  # force float32 to reduce memory footprint during merge
 
         # Prep tiles (flip south-up) while staying on the caller-provided disk.
         prepared_paths: List[Path] = []
         for p in tile_paths:
+            check_cancelled(should_stop)
             with rasterio.open(p) as src:
                 transform = src.transform
                 if transform.e > 0:
@@ -119,6 +127,8 @@ class AlphaEarthExtractor:
                     prepared_paths.append(p)
 
         srcs = [rasterio.open(p) for p in prepared_paths]
+        success = False
+
         def merge_single_band(band_index: int):
             """
             Merge one band at a time using temporary single-band datasets.
@@ -127,6 +137,7 @@ class AlphaEarthExtractor:
             band_datasets = []
             try:
                 for src in srcs:
+                    check_cancelled(should_stop)
                     band_data = src.read(band_index, out_dtype=merge_dtype)
                     profile = src.profile.copy()
                     profile.update(count=1, dtype=merge_dtype)
@@ -144,6 +155,7 @@ class AlphaEarthExtractor:
                     mf.close()
 
         try:
+            check_cancelled(should_stop)
             first_mosaic, transform = merge_single_band(1)
             meta = srcs[0].meta.copy()
             meta.update(
@@ -157,15 +169,30 @@ class AlphaEarthExtractor:
             )
 
             with rasterio.open(out_path, "w", **meta) as dst:
+                check_cancelled(should_stop)
                 dst.write(np.squeeze(first_mosaic, axis=0), 1)
                 for band in range(2, srcs[0].count + 1):
+                    check_cancelled(should_stop)
                     mosaic, t = merge_single_band(band)
                     if t != transform:
                         raise ValueError("Band transforms differ during merge; aborting.")
                     dst.write(np.squeeze(mosaic, axis=0), band)
+            success = True
         finally:
             for s in srcs:
                 s.close()
+            if success:
+                seen = set()
+                for p in tile_paths + prepared_paths:
+                    if p in seen:
+                        continue
+                    seen.add(p)
+                    try:
+                        p.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except Exception as exc:  # best-effort cleanup
+                        self.logger.warning("Could not delete tile %s: %s", p, exc)
         return out_path
 
     def extract(
@@ -176,11 +203,13 @@ class AlphaEarthExtractor:
         resolution_m: float | None,
         temp_dir: str | Path | None = None,
         progress_cb: Optional[Callable[[str], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> Tuple[Path, float | None]:
         """
         Download annual AlphaEarth embeddings for the given year.
         Returns (path, effective resolution).
         """
+        check_cancelled(should_stop)
         self._initialize()
         # Keep intermediates on the caller-specified disk to avoid filling /tmp.
         tmp_dir = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
@@ -208,6 +237,7 @@ class AlphaEarthExtractor:
             raise ValueError("No resolution provided and no native resolution defined for Alpha Earth.")
 
         name = f"alphaearth_{year}"
+        check_cancelled(should_stop)
         try:
             path = self._download_image(image, aoi_geojson, scale, name, tmp_dir)
             self._notify(progress_cb, f"{name}: downloaded full AOI without tiling")
@@ -220,6 +250,7 @@ class AlphaEarthExtractor:
         tile_deg = TILE_DEG
         last_exc: Exception | None = None
         while tile_deg >= MIN_TILE_DEG:
+            check_cancelled(should_stop)
             tile_regions = self._tile_aoi(aoi_geojson, tile_deg)
             if not tile_regions:
                 raise ValueError("AOI produced no tiles.")
@@ -232,6 +263,7 @@ class AlphaEarthExtractor:
 
             tile_paths: List[Path] = []
             for idx, tile_region in enumerate(tile_regions):
+                check_cancelled(should_stop)
                 tile_name = f"{name}_tile{idx}"
                 try:
                     tile_path = self._download_image(image, tile_region, scale, tile_name, tmp_dir)
@@ -247,9 +279,10 @@ class AlphaEarthExtractor:
                     raise
                 tile_paths.append(tile_path)
                 self._notify(progress_cb, f"{name}: downloaded tile {idx + 1}/{total_tiles}")
+                check_cancelled(should_stop)
 
             if len(tile_paths) == total_tiles:
-                merged = self._merge_tiles(tile_paths, name, tmp_dir)
+                merged = self._merge_tiles(tile_paths, name, tmp_dir, should_stop=should_stop)
                 self._notify(progress_cb, f"{name}: merged {total_tiles} tiles")
                 return merged, scale
 

@@ -11,6 +11,7 @@ import rasterio
 from rasterio.merge import merge as rio_merge
 from shapely.geometry import box, shape, mapping
 from spatial_data_mining.variables.metadata import get_variable_metadata
+from spatial_data_mining.utils.cancellation import check_cancelled
 
 SEASON_RANGES = {
     "spring": ("03-01", "05-31"),
@@ -23,7 +24,7 @@ SEASON_RANGES = {
 }
 
 # Initial tile size (degrees) and the smallest size we'll try when falling back.
-TILE_DEG = 0.05
+TILE_DEG = 0.2
 MIN_TILE_DEG = 0.01
 
 def season_date_range(year: int, season: str) -> Tuple[str, str]:
@@ -119,10 +120,18 @@ class GEEExtractor:
             x += tile_deg
         return tiles
 
-    def _merge_tiles(self, tile_paths: List[Path], name: str, tmp_dir: Path) -> Path:
+    def _merge_tiles(
+        self,
+        tile_paths: List[Path],
+        name: str,
+        tmp_dir: Path,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> Path:
         out_path = tmp_dir / f"{name}_merged.tif"
         srcs = [rasterio.open(p) for p in tile_paths]
+        success = False
         try:
+            check_cancelled(should_stop)
             mosaic, transform = rio_merge(srcs)
             meta = srcs[0].meta.copy()
             meta.update(
@@ -134,10 +143,20 @@ class GEEExtractor:
                 }
             )
             with rasterio.open(out_path, "w", **meta) as dst:
+                check_cancelled(should_stop)
                 dst.write(mosaic)
+            success = True
         finally:
             for s in srcs:
                 s.close()
+            if success:
+                for p in set(tile_paths):
+                    try:
+                        p.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except Exception as exc:
+                        self.logger.warning("Could not delete tile %s: %s", p, exc)
         return out_path
 
     def extract(
@@ -148,11 +167,13 @@ class GEEExtractor:
         resolution_m: float | None,
         temp_dir: str | Path | None = None,
         progress_cb: Optional[Callable[[str], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> Tuple[Path, float | None]:
         """
         Download a seasonal median Sentinel-2 index image clipped to AOI.
         Returns (local temporary GeoTIFF path, effective resolution in meters).
         """
+        check_cancelled(should_stop)
         self._initialize()
         # Keep intermediates on the caller-specified disk to avoid filling /tmp.
         tmp_dir = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
@@ -178,6 +199,7 @@ class GEEExtractor:
         native_scale = meta.get("native_resolution_m")
         effective_res = resolution_m if resolution_m is not None else native_scale
 
+        check_cancelled(should_stop)
         try:
             path = self._download_image(image, aoi_geojson, effective_res, name, tmp_dir)
             self._notify(progress_cb, f"{name}: downloaded full AOI without tiling")
@@ -193,6 +215,7 @@ class GEEExtractor:
         tile_deg = TILE_DEG
         last_exc: Exception | None = None
         while tile_deg >= MIN_TILE_DEG:
+            check_cancelled(should_stop)
             tile_regions = self._tile_aoi(aoi_geojson, tile_deg)
             if not tile_regions:
                 raise ValueError("AOI produced no tiles.")
@@ -204,6 +227,7 @@ class GEEExtractor:
 
             tile_paths: List[Path] = []
             for idx, tile_region in enumerate(tile_regions):
+                check_cancelled(should_stop)
                 tile_name = f"{name}_tile{idx}"
                 try:
                     tile_path = self._download_image(
@@ -228,9 +252,10 @@ class GEEExtractor:
                     progress_cb,
                     f"{name}: downloaded tile {idx + 1}/{total_tiles}",
                 )
+                check_cancelled(should_stop)
 
             if len(tile_paths) == total_tiles:
-                merged = self._merge_tiles(tile_paths, name, tmp_dir)
+                merged = self._merge_tiles(tile_paths, name, tmp_dir, should_stop=should_stop)
                 self._notify(progress_cb, f"{name}: merged {total_tiles} tiles")
                 return merged, effective_res
 
