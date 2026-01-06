@@ -1,6 +1,6 @@
 job:
   name: test
-  aoi_path: data\aoi\ordesa.geojson
+  aoi_path: data/aoi/ordesa.geojson
   target_crs: EPSG:3035
   resolution_m: 10.0
   year: 2024

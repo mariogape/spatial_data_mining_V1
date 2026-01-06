@@ -1,4 +1,6 @@
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -100,6 +102,22 @@ class CLCPlusExtractor:
 
         return best_path, best_native_res
 
+    @staticmethod
+    def _stage_source(src_path: Path, temp_dir: Path) -> Path:
+        """
+        Stage the source raster into a temp directory so transforms do not write
+        alongside user-provided inputs. Prefer hard links when possible.
+        """
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        staged_path = temp_dir / src_path.name
+        if staged_path.exists():
+            return staged_path
+        try:
+            os.link(src_path, staged_path)
+        except Exception:
+            shutil.copy2(src_path, staged_path)
+        return staged_path
+
     def extract(
         self,
         aoi_geojson: dict,
@@ -116,6 +134,11 @@ class CLCPlusExtractor:
         """
         check_cancelled(should_stop)
         path, native_res = self._select_best_raster(aoi_geojson, should_stop=should_stop)
+        if temp_dir is not None:
+            staged_path = self._stage_source(path, Path(temp_dir))
+            if staged_path != path:
+                self._notify(progress_cb, f"CLCplus: staged source raster in {staged_path.parent}")
+            path = staged_path
         effective_res = resolution_m if resolution_m is not None else native_res
         self._notify(progress_cb, f"CLCplus: selected source raster {path.name}")
         return path, effective_res

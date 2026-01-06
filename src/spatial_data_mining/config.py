@@ -29,6 +29,23 @@ class JobConfig(BaseModel):
     target_crs: str = Field(pattern=r"EPSG:\d+")
     resolution_m: float | None
     clcplus_input_dir: str | None = None
+    swi_collection_id: str | None = None
+    swi_band: str | None = None
+    swi_aggregation: str | None = None
+    swi_backend_url: str | None = None
+    swi_date: str | None = None
+    swi_oidc_provider_id: str | None = None
+    rgb_date: str | None = None
+    rgb_search_days: int | None = None
+    rgb_collection_id: str | None = None
+    rgb_bands: str | None = None
+    rgb_cloud_cover_max: float | None = None
+    rgb_cloud_cover_property: str | None = None
+    rgb_backend_url: str | None = None
+    rgb_oidc_provider_id: str | None = None
+    rgb_stac_url: str | None = None
+    rgb_stac_collection_id: str | None = None
+    rgb_prefilter: bool | None = None
     year: int | None = None
     years: List[int] | None = None
     season: str | None = None

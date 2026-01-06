@@ -6,8 +6,8 @@ xarray
 shapely
 pyproj
 pydantic
-loguru
 google-cloud-storage
 pyyaml
 ipywidgets
 ipyfilechooser
+openeo

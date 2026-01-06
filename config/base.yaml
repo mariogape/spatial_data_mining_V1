@@ -11,6 +11,8 @@ defaults:
   storage:
     kind: local_cog
     output_dir: data/outputs
+    bucket: openpas-hdh-dev-cache
+    prefix: tiles/active
 
 logging:
   level: INFO

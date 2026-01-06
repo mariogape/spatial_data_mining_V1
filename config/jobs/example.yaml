@@ -9,5 +9,5 @@ job:
   storage:
     kind: local_cog          # or gcs_cog
     output_dir: data/outputs # used for local_cog
-    bucket: your-bucket      # used for gcs_cog
-    prefix: spatial/outputs  # optional
+    bucket: openpas-hdh-dev-cache # used for gcs_cog
+    prefix: tiles/active     # optional

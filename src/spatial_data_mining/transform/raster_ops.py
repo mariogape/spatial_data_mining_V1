@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import rioxarray
 import rasterio
 from rasterio.io import MemoryFile
@@ -184,6 +185,57 @@ def process_raster_to_target(
 
     data.rio.to_raster(processed_path, compress="deflate")
 
+    return processed_path
+
+
+def process_fvc_to_target(
+    src_path: Path,
+    target_crs: str,
+    resolution_m: float | None,
+    aoi_geom_target: Any,
+) -> Path:
+    """
+    Compute FVC from an NDVI composite, then reproject/resample/clip to the target AOI/CRS.
+    FVC = (NDVI - NDVI_soil) / (NDVI_veg - NDVI_soil), where NDVI_soil/veg are 5th/95th
+    percentiles of NDVI within the AOI.
+    """
+    src_path = Path(src_path)
+    processed_path = src_path.with_name(f"{src_path.stem}_fvc_processed.tif")
+
+    data = _read_raster_clipped(src_path, target_crs, aoi_geom_target)
+    data = _normalize_spatial_dims(data)
+    data = _standardize_nodata(data)
+    data = _clip_to_source_aoi(data, target_crs, aoi_geom_target)
+
+    nodata = data.rio.nodata
+    if nodata is None:
+        nodata = NODATA_VALUE
+
+    values = np.ma.array(data.values, dtype="float64")
+    values = np.ma.masked_invalid(values)
+    values = np.ma.masked_where(values == nodata, values)
+    valid = values.compressed()
+    if valid.size == 0:
+        raise ValueError("FVC requires valid NDVI pixels in the AOI to compute percentiles.")
+
+    ndvi_soil, ndvi_veg = np.percentile(valid, [5, 95])
+    denom = ndvi_veg - ndvi_soil
+    if denom == 0:
+        raise ValueError("FVC cannot be computed because NDVI_veg equals NDVI_soil.")
+
+    fvc = (data - ndvi_soil) / denom
+    fvc = fvc.clip(min=0.0, max=1.0)
+    fvc = fvc.where(data != nodata, other=NODATA_VALUE)
+    try:
+        fvc = fvc.astype("float32")
+    except Exception:
+        pass
+
+    fvc = _reproject_raster(fvc, target_crs, resolution_m, Resampling.bilinear)
+    fvc = _clip_to_aoi(fvc, target_crs, aoi_geom_target)
+    fvc = _standardize_nodata(fvc)
+
+    fvc.rio.to_raster(processed_path, compress="deflate")
     return processed_path
 
 
