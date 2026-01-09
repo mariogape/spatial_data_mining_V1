@@ -97,7 +97,7 @@ job:
   resolution_m: 20
   year: 2023
   season: summer
-  variables: [ndvi, fvc, ndmi, msi, bsi, swi, rgb]
+  variables: [ndvi, fvc, ndmi, msi, bsi, swi, rgb, rgb_raw]
   storage:
     kind: local_cog          # or gcs_cog
     output_dir: data/outputs # used for local_cog
@@ -111,7 +111,7 @@ job:
 - `resolution_m`: output pixel size in meters (or omit to use native).
 - `year` or `years`: one or more years.
 - `season` or `seasons`: `winter`, `spring`, `summer`, `autumn`, `annual` (or `static` for `alpha_earth`, `swi`, `rgb` when using static layers).
-- `variables`: list of variables, e.g. `ndvi`, `fvc`, `ndmi`, `msi`, `bsi`, `swi`, `rgb`, `alpha_earth`, `clcplus`.
+- `variables`: list of variables, e.g. `ndvi`, `fvc`, `ndmi`, `msi`, `bsi`, `swi`, `rgb`, `rgb_raw`, `alpha_earth`, `clcplus`.
 - `storage`: `local_cog` (required `output_dir`) or `gcs_cog` (required `bucket`).
 - `clcplus_input_dir`: required when requesting `clcplus`.
 - `swi_collection_id`, `swi_band`, `swi_aggregation`, `swi_backend_url`, `swi_date`, `swi_oidc_provider_id`: optional overrides for the SWI extractor.
@@ -127,7 +127,8 @@ Each variable is extracted from the following source and processed as described:
 - `ndmi`: Same as `ndvi`, but uses B08/B11 and outputs on the 20m grid by default.
 - `msi`: Same as `ndvi`, but uses B11/B08 and outputs on the 20m grid by default.
 - `bsi`: Same as `ndvi`, uses B11/B04/B08/B02 and outputs on the 20m grid by default.
-- `rgb`: Copernicus Data Space openEO (`SENTINEL2_L2A`). Uses RGB bands (B04/B03/B02) for a single date; selects the closest available image to `rgb_date` within the search window. If no single date fully covers the AOI, the pipeline mosaics multiple dates to fill nodata (configurable). If no date is provided, uses the mid-season date.
+- `rgb`: Copernicus Data Space openEO (`SENTINEL2_L1C`). Applies the Sentinel Hub L1C true color optimized formula to B04/B03/B02 and outputs 8-bit RGBA for visualization. Uses the same date selection logic as `rgb_raw` (include both if you want raw + visualization outputs).
+- `rgb_raw`: Copernicus Data Space openEO (`SENTINEL2_L2A`). Raw RGB reflectance (B04/B03/B02) for a single date; selects the closest available image to `rgb_date` within the search window. If no single date fully covers the AOI, the pipeline mosaics multiple dates to fill nodata (configurable). If no date is provided, uses the mid-season date.
 - `swi`: Copernicus Land Monitoring Service Soil Water Index via openEO. Defaults to VITO `CGLS_SWI_V1_EUROPE` with band `SWI_100`. If no exact date is provided, the mid-season date is used; set `OPENEO_SWI_AGGREGATION` if you want aggregation. Prefer native resolution (omit `resolution_m`) to avoid upsampling.
 - `alpha_earth`: Google Earth Engine (`GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`). Annual image for the given year, clipped to AOI; falls back to tiling if AOI is large.
 - `clcplus`: Local, user-provided CLCplus raster(s). The pipeline selects the raster with the largest AOI overlap, then reprojects and clips; nodata and 0 values are recoded to -9999.

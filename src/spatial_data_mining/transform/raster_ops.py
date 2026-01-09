@@ -5,10 +5,11 @@ from typing import Any
 import numpy as np
 import rioxarray
 import rasterio
+import xarray as xr
 from rasterio.io import MemoryFile
 from rasterio.mask import mask
 from pyproj import Transformer
-from rasterio.enums import Resampling
+from rasterio.enums import Resampling, ColorInterp
 from rasterio.warp import calculate_default_transform
 from shapely.geometry import mapping, box
 from shapely.ops import transform as shp_transform
@@ -162,6 +163,81 @@ def _read_raster_clipped(src_path: Path, target_crs: str, aoi_geom_target: Any):
         return rioxarray.open_rasterio(src_path, masked=True)
 
 
+def _scale_reflectance(values: np.ndarray, src_path: Path, valid_mask: np.ndarray) -> np.ndarray:
+    values = values.astype("float32", copy=False)
+    scales = None
+    offsets = None
+    try:
+        with rasterio.open(src_path) as src:
+            scales = src.scales
+            offsets = src.offsets
+    except Exception:
+        scales = None
+        offsets = None
+
+    applied = False
+    if scales or offsets:
+        for idx in range(min(values.shape[0], len(scales or []))):
+            scale = scales[idx] if scales and scales[idx] is not None else 1.0
+            offset = offsets[idx] if offsets and offsets[idx] is not None else 0.0
+            if scale != 1.0 or offset != 0.0:
+                values[idx] = values[idx] * scale + offset
+                applied = True
+
+    if not applied:
+        valid_values = values[:, valid_mask] if valid_mask.any() else values.reshape(-1)
+        if valid_values.size and np.nanmax(valid_values) > 1.5:
+            values = values / 10000.0
+
+    return values
+
+
+def _sentinel_hub_true_color(b04: np.ndarray, b03: np.ndarray, b02: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    max_r = 3.0
+    mid_r = 0.13
+    sat = 1.3
+    gamma = 2.3
+    ray_r = 0.013
+    ray_g = 0.024
+    ray_b = 0.041
+
+    g_off = 0.01
+    g_off_pow = g_off**gamma
+    g_off_range = (1 + g_off) ** gamma - g_off_pow
+
+    def adj(a, tx, ty, max_c):
+        ar = np.clip(a / max_c, 0.0, 1.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return ar * (ar * (tx / max_c + ty - 1) - ty) / (ar * (2 * tx / max_c - 1) - tx / max_c)
+
+    def adj_gamma(b):
+        return (np.power((b + g_off), gamma) - g_off_pow) / g_off_range
+
+    def s_adj(a):
+        return adj_gamma(adj(a, mid_r, 1, max_r))
+
+    def sat_enh(r, g, b):
+        avg_s = (r + g + b) / 3.0 * (1 - sat)
+        r_out = np.clip(avg_s + r * sat, 0.0, 1.0)
+        g_out = np.clip(avg_s + g * sat, 0.0, 1.0)
+        b_out = np.clip(avg_s + b * sat, 0.0, 1.0)
+        return r_out, g_out, b_out
+
+    def s_rgb(c):
+        return np.where(
+            c <= 0.0031308,
+            12.92 * c,
+            1.055 * np.power(c, 0.41666666666) - 0.055,
+        )
+
+    r_lin, g_lin, b_lin = sat_enh(
+        s_adj(b04 - ray_r),
+        s_adj(b03 - ray_g),
+        s_adj(b02 - ray_b),
+    )
+    return s_rgb(r_lin), s_rgb(g_lin), s_rgb(b_lin)
+
+
 def process_raster_to_target(
     src_path: Path,
     target_crs: str,
@@ -184,6 +260,89 @@ def process_raster_to_target(
     data = _standardize_nodata(data)
 
     data.rio.to_raster(processed_path, compress="deflate")
+
+    return processed_path
+
+
+def process_rgb_true_color(
+    src_path: Path,
+    target_crs: str,
+    resolution_m: float | None,
+    aoi_geom_target: Any,
+) -> Path:
+    """
+    Apply Sentinel Hub L1C true color optimized visualization and output RGBA.
+    """
+    src_path = Path(src_path)
+    processed_path = src_path.with_name(f"{src_path.stem}_truecolor.tif")
+
+    data = _read_raster_clipped(src_path, target_crs, aoi_geom_target)
+    data = _normalize_spatial_dims(data)
+    if "band" in data.dims:
+        data = data.transpose("band", "y", "x")
+
+    values = data.values
+    if np.ma.isMaskedArray(values):
+        mask = np.ma.getmaskarray(values)
+        values = values.filled(np.nan)
+    else:
+        mask = np.zeros_like(values, dtype=bool)
+
+    nodata = data.rio.nodata
+    if nodata is not None and nodata != 0:
+        mask |= values == nodata
+    mask |= ~np.isfinite(values)
+    valid_mask = ~np.any(mask, axis=0)
+    values = np.where(mask, 0.0, values)
+
+    if values.shape[0] < 3:
+        raise ValueError("RGB true color requires at least three bands (B04/B03/B02).")
+
+    values = _scale_reflectance(values, src_path, valid_mask)
+
+    r, g, b = _sentinel_hub_true_color(values[0], values[1], values[2])
+    r = np.where(valid_mask, r, 0.0)
+    g = np.where(valid_mask, g, 0.0)
+    b = np.where(valid_mask, b, 0.0)
+    alpha = np.where(valid_mask, 1.0, 0.0)
+
+    rgba = np.stack([r, g, b, alpha], axis=0).astype("float32")
+    rgba_da = xr.DataArray(
+        rgba,
+        dims=("band", "y", "x"),
+        coords={"band": [1, 2, 3, 4], "y": data["y"], "x": data["x"]},
+    )
+    rgba_da = rgba_da.rio.write_crs(data.rio.crs, inplace=False)
+    rgba_da = rgba_da.rio.write_transform(data.rio.transform(), inplace=False)
+
+    rgba_da = _clip_to_source_aoi(rgba_da, target_crs, aoi_geom_target)
+    rgba_da = _reproject_raster(rgba_da, target_crs, resolution_m, Resampling.bilinear)
+    rgba_da = _clip_to_aoi(rgba_da, target_crs, aoi_geom_target)
+
+    rgba_da = rgba_da.clip(min=0.0, max=1.0)
+    rgba_da = (rgba_da * 255.0).round().astype("uint8")
+    try:
+        rgba_da = rgba_da.rio.write_nodata(None, inplace=False)
+    except Exception:
+        rgba_da = rgba_da.copy()
+        rgba_da.attrs.pop("_FillValue", None)
+
+    rgba_da.rio.to_raster(processed_path, compress="deflate")
+
+    try:
+        with rasterio.open(processed_path, "r+") as dst:
+            dst.colorinterp = (
+                ColorInterp.red,
+                ColorInterp.green,
+                ColorInterp.blue,
+                ColorInterp.alpha,
+            )
+            try:
+                dst.descriptions = ("red", "green", "blue", "alpha")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     return processed_path
 

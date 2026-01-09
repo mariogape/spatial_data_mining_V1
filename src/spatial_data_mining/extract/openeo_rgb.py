@@ -44,7 +44,9 @@ class OpenEORGBExtractor:
         min_coverage: float | None = None,
         backend_url: str | None = None,
         verify_ssl: bool | None = None,
+        variable_name: str | None = None,
     ):
+        self.variable_name = str(variable_name or "rgb").lower()
         self.rgb_date = self._normalize_date(rgb_date or os.getenv("OPENEO_RGB_DATE"))
         raw_search_days = (
             search_days
@@ -785,7 +787,7 @@ class OpenEORGBExtractor:
         minx, miny, maxx, maxy = geom.bounds
         spatial_extent = {"west": minx, "south": miny, "east": maxx, "north": maxy}
 
-        meta = get_variable_metadata("rgb")
+        meta = get_variable_metadata(self.variable_name)
         native_scale = meta.get("native_resolution_m")
         effective_res = resolution_m if resolution_m is not None else native_scale
 

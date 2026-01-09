@@ -6,6 +6,7 @@ from spatial_data_mining.extract.openeo_swi import OpenEOSoilWaterIndexExtractor
 from spatial_data_mining.transform.raster_ops import (
     process_clcplus_to_target,
     process_fvc_to_target,
+    process_rgb_true_color,
     process_raster_to_target,
 )
 
@@ -31,6 +32,24 @@ VARIABLES = {
         "extractor_factory": lambda job=None: OpenEORGBExtractor(
             rgb_date=getattr(job, "rgb_date", None),
             search_days=getattr(job, "rgb_search_days", None),
+            collection_id="SENTINEL2_L1C",
+            bands="B04,B03,B02",
+            cloud_cover_max=getattr(job, "rgb_cloud_cover_max", None),
+            cloud_cover_property=getattr(job, "rgb_cloud_cover_property", None),
+            cloud_mask=False,
+            oidc_provider_id=getattr(job, "rgb_oidc_provider_id", None),
+            stac_url=getattr(job, "rgb_stac_url", None),
+            stac_collection_id="sentinel-2-l1c",
+            prefilter=getattr(job, "rgb_prefilter", None),
+            backend_url=getattr(job, "rgb_backend_url", None),
+            variable_name="rgb",
+        ),
+        "transform": process_rgb_true_color,
+    },
+    "rgb_raw": {
+        "extractor_factory": lambda job=None: OpenEORGBExtractor(
+            rgb_date=getattr(job, "rgb_date", None),
+            search_days=getattr(job, "rgb_search_days", None),
             collection_id=getattr(job, "rgb_collection_id", None),
             bands=getattr(job, "rgb_bands", None),
             cloud_cover_max=getattr(job, "rgb_cloud_cover_max", None),
@@ -40,6 +59,7 @@ VARIABLES = {
             stac_collection_id=getattr(job, "rgb_stac_collection_id", None),
             prefilter=getattr(job, "rgb_prefilter", None),
             backend_url=getattr(job, "rgb_backend_url", None),
+            variable_name="rgb_raw",
         ),
         "transform": process_raster_to_target,
     },
