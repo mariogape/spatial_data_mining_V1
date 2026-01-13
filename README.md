@@ -97,7 +97,7 @@ job:
   resolution_m: 20
   year: 2023
   season: summer
-  variables: [ndvi, fvc, ndmi, msi, bsi, swi, rgb, rgb_raw]
+  variables: [ndvi, fvc, ndmi, msi, bsi, swi, rgb, rgb_raw, bdod, clay, cfvo, sand, silt, cec]
   storage:
     kind: local_cog          # or gcs_cog
     output_dir: data/outputs # used for local_cog
@@ -111,11 +111,15 @@ job:
 - `resolution_m`: output pixel size in meters (or omit to use native).
 - `year` or `years`: one or more years.
 - `season` or `seasons`: `winter`, `spring`, `summer`, `autumn`, `annual` (or `static` for `alpha_earth`, `swi`, `rgb` when using static layers).
-- `variables`: list of variables, e.g. `ndvi`, `fvc`, `ndmi`, `msi`, `bsi`, `swi`, `rgb`, `rgb_raw`, `alpha_earth`, `clcplus`.
+- `variables`: list of variables, e.g. `ndvi`, `fvc`, `ndmi`, `msi`, `bsi`, `swi`, `rgb`, `rgb_raw`, `alpha_earth`, `clcplus`, `bdod`, `clay`, `cfvo`, `sand`, `silt`, `cec`.
 - `storage`: `local_cog` (required `output_dir`) or `gcs_cog` (required `bucket`).
 - `clcplus_input_dir`: required when requesting `clcplus`.
+- `soilgrids_depth`, `soilgrids_stat`: optional overrides for SoilGrids depth/stat (defaults to `15-30cm` and `mean`).
+- `soilgrids_base_url`: optional override for the SoilGrids file service (default `https://files.isric.org/soilgrids/latest/data`).
+- `soilgrids_tile_index_path`: optional path for the cached SoilGrids tile index (default `data/cache/soilgrids_tile_index.json`).
 - `swi_collection_id`, `swi_band`, `swi_aggregation`, `swi_backend_url`, `swi_date`, `swi_oidc_provider_id`: optional overrides for the SWI extractor.
 - `rgb_date`, `rgb_search_days`, `rgb_collection_id`, `rgb_bands`, `rgb_cloud_cover_max`, `rgb_cloud_cover_property`, `rgb_backend_url`, `rgb_oidc_provider_id`, `rgb_stac_url`, `rgb_stac_collection_id`, `rgb_prefilter`: optional overrides for the RGB extractor.
+- `gbif_format`, `gbif_max_records`, `gbif_taxon_key`, `gbif_dataset_key`, `gbif_basis_of_record`, `gbif_occurrence_status`, `gbif_kingdom_keys`, `gbif_animal_class_keys`: optional overrides for the GBIF Occurrences extractor.
 Note: if `rgb_date` is not provided, the pipeline uses the mid-season date for each year/season.
 Note: for `gcs_cog`, `storage.prefix` is treated as a base prefix; the pipeline appends `<variable>/<year>/<season>/` automatically.
 
@@ -132,6 +136,8 @@ Each variable is extracted from the following source and processed as described:
 - `swi`: Copernicus Land Monitoring Service Soil Water Index via openEO. Defaults to VITO `CGLS_SWI_V1_EUROPE` with band `SWI_100`. If no exact date is provided, the mid-season date is used; set `OPENEO_SWI_AGGREGATION` if you want aggregation. Prefer native resolution (omit `resolution_m`) to avoid upsampling.
 - `alpha_earth`: Google Earth Engine (`GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL`). Annual image for the given year, clipped to AOI; falls back to tiling if AOI is large.
 - `clcplus`: Local, user-provided CLCplus raster(s). The pipeline selects the raster with the largest AOI overlap, then reprojects and clips; nodata and 0 values are recoded to -9999.
+- SoilGrids variables (`bdod`, `clay`, `cfvo`, `sand`, `silt`, `cec`): ISRIC SoilGrids 250m tiles via the file service. The extractor downloads the tiles intersecting the AOI, mosaics them, and applies the standard reprojection/clip pipeline. Defaults to `15-30cm` depth and `mean` statistic; override with `soilgrids_depth` and `soilgrids_stat`. Outputs are labeled with year `static` and season `annual` (SoilGrids has no year dimension). The first run builds a cached tile index at `data/cache/soilgrids_tile_index.json`.
+- `gbif_occurrences`: GBIF Occurrence API. Returns occurrence points filtered to the AOI (full history by default). By default, results are limited to Animalia (Aves + Mammalia) and Plantae; override with `gbif_kingdom_keys` and `gbif_animal_class_keys`. Output is a vector layer (GeoJSON or GeoPackage) with species, taxonomic ranks, and eventDate/year when available. Files are named `<variable>_<aoi>.<ext>`.
 
 ## Season date windows
 Season names map to the following date ranges (used by openEO and GEE extractors). If a season name is not recognized, the pipeline defaults to the full year.
@@ -176,6 +182,12 @@ Sentinel-2 indices (`ndvi`, `fvc`, `ndmi`, `msi`, `bsi`) use openEO.
   - `OPENEO_SWI_OIDC_PROVIDER_ID` (optional; default `terrascope` on VITO)
   - `OPENEO_RGB_OIDC_PROVIDER_ID` (optional; e.g. `CDSE` for Copernicus Data Space)
 - TLS: if the backend has a broken certificate and you still want to test, set `OPENEO_VERIFY_SSL=0` (insecure).
+
+### GBIF Occurrence API
+- Optional env vars:
+  - `SDM_GBIF_MAX_RECORDS` (optional; max records per AOI/year/season query)
+  - `SDM_GBIF_TIMEOUT_S` (optional; request timeout in seconds)
+Note: `gbif_kingdom_keys` uses GBIF backbone kingdom keys (default `[1, 6]` for Animalia/Plantae). `gbif_animal_class_keys` uses GBIF class keys (default `[212, 359]` for Aves/Mammalia).
 
 ### Google Earth Engine
 Used by `alpha_earth`.

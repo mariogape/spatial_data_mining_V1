@@ -1,13 +1,21 @@
+from functools import partial
+
 from spatial_data_mining.extract.alpha_earth import AlphaEarthExtractor
 from spatial_data_mining.extract.clcplus import CLCPlusExtractor
+from spatial_data_mining.extract.gbif_occurrences import GBIFOccurrenceExtractor
 from spatial_data_mining.extract.openeo_indices import OpenEOIndexExtractor, OpenEOFVCExtractor
 from spatial_data_mining.extract.openeo_rgb import OpenEORGBExtractor
 from spatial_data_mining.extract.openeo_swi import OpenEOSoilWaterIndexExtractor
+from spatial_data_mining.extract.soilgrids import SoilGridsExtractor
 from spatial_data_mining.transform.raster_ops import (
     process_clcplus_to_target,
     process_fvc_to_target,
     process_rgb_true_color,
     process_raster_to_target,
+)
+from spatial_data_mining.transform.vector_ops import (
+    normalize_vector_format,
+    process_vector_to_target,
 )
 
 VARIABLES = {
@@ -73,6 +81,84 @@ VARIABLES = {
         ),
         "transform": process_clcplus_to_target,
     },
+    "bdod": {
+        "extractor_factory": lambda job=None: SoilGridsExtractor(
+            "bdod",
+            depth=getattr(job, "soilgrids_depth", None),
+            stat=getattr(job, "soilgrids_stat", None),
+            base_url=getattr(job, "soilgrids_base_url", None),
+            tile_index_path=getattr(job, "soilgrids_tile_index_path", None),
+        ),
+        "transform": process_raster_to_target,
+    },
+    "clay": {
+        "extractor_factory": lambda job=None: SoilGridsExtractor(
+            "clay",
+            depth=getattr(job, "soilgrids_depth", None),
+            stat=getattr(job, "soilgrids_stat", None),
+            base_url=getattr(job, "soilgrids_base_url", None),
+            tile_index_path=getattr(job, "soilgrids_tile_index_path", None),
+        ),
+        "transform": process_raster_to_target,
+    },
+    "cfvo": {
+        "extractor_factory": lambda job=None: SoilGridsExtractor(
+            "cfvo",
+            depth=getattr(job, "soilgrids_depth", None),
+            stat=getattr(job, "soilgrids_stat", None),
+            base_url=getattr(job, "soilgrids_base_url", None),
+            tile_index_path=getattr(job, "soilgrids_tile_index_path", None),
+        ),
+        "transform": process_raster_to_target,
+    },
+    "sand": {
+        "extractor_factory": lambda job=None: SoilGridsExtractor(
+            "sand",
+            depth=getattr(job, "soilgrids_depth", None),
+            stat=getattr(job, "soilgrids_stat", None),
+            base_url=getattr(job, "soilgrids_base_url", None),
+            tile_index_path=getattr(job, "soilgrids_tile_index_path", None),
+        ),
+        "transform": process_raster_to_target,
+    },
+    "silt": {
+        "extractor_factory": lambda job=None: SoilGridsExtractor(
+            "silt",
+            depth=getattr(job, "soilgrids_depth", None),
+            stat=getattr(job, "soilgrids_stat", None),
+            base_url=getattr(job, "soilgrids_base_url", None),
+            tile_index_path=getattr(job, "soilgrids_tile_index_path", None),
+        ),
+        "transform": process_raster_to_target,
+    },
+    "cec": {
+        "extractor_factory": lambda job=None: SoilGridsExtractor(
+            "cec",
+            depth=getattr(job, "soilgrids_depth", None),
+            stat=getattr(job, "soilgrids_stat", None),
+            base_url=getattr(job, "soilgrids_base_url", None),
+            tile_index_path=getattr(job, "soilgrids_tile_index_path", None),
+        ),
+        "transform": process_raster_to_target,
+    },
+    "gbif_occurrences": {
+        "extractor_factory": lambda job=None: GBIFOccurrenceExtractor(
+            taxon_key=getattr(job, "gbif_taxon_key", None),
+            dataset_key=getattr(job, "gbif_dataset_key", None),
+            basis_of_record=getattr(job, "gbif_basis_of_record", None),
+            occurrence_status=getattr(job, "gbif_occurrence_status", None),
+            kingdom_keys=getattr(job, "gbif_kingdom_keys", None),
+            animal_class_keys=getattr(job, "gbif_animal_class_keys", None),
+            max_records=getattr(job, "gbif_max_records", None),
+        ),
+        "transform_factory": lambda job=None: partial(
+            process_vector_to_target,
+            output_format=getattr(job, "gbif_format", None),
+        ),
+        "output_type": "vector",
+        "output_ext": lambda job=None: normalize_vector_format(getattr(job, "gbif_format", None)),
+        "include_time": False,
+    },
 }
 
 
@@ -82,10 +168,35 @@ def _resolve_extractor(var_def: dict, job_cfg=None):
     return var_def.get("extractor")
 
 
+def _resolve_transform(var_def: dict, job_cfg=None):
+    if "transform_factory" in var_def:
+        return var_def["transform_factory"](job_cfg)
+    return var_def.get("transform")
+
+
+def _resolve_output_ext(var_def: dict, job_cfg=None):
+    output_ext = var_def.get("output_ext")
+    if callable(output_ext):
+        return output_ext(job_cfg)
+    return output_ext
+
+
 def get_variable(name: str, job_cfg=None):
     key = name.lower()
     if key not in VARIABLES:
         raise KeyError(f"Variable not registered: {name}")
     var_def = VARIABLES[key]
     extractor = _resolve_extractor(var_def, job_cfg=job_cfg)
-    return {"extractor": extractor, "transform": var_def["transform"]}
+    transform = _resolve_transform(var_def, job_cfg=job_cfg)
+    output_type = var_def.get("output_type", "raster")
+    output_ext = _resolve_output_ext(var_def, job_cfg=job_cfg)
+    if not output_ext:
+        output_ext = "tif" if output_type == "raster" else "geojson"
+    include_time = var_def.get("include_time", True)
+    return {
+        "extractor": extractor,
+        "transform": transform,
+        "output_type": output_type,
+        "output_ext": output_ext,
+        "include_time": include_time,
+    }

@@ -38,8 +38,22 @@ def _slugify_name(name: str) -> str:
     return slug or "aoi"
 
 
+def _build_output_filename(
+    var_slug: str,
+    year: int | str,
+    season_slug: str,
+    aoi_slug: str,
+    output_ext: str,
+    include_time: bool = True,
+) -> str:
+    ext = str(output_ext).lstrip(".") if output_ext else "tif"
+    if include_time:
+        return f"{var_slug}_{year}_{season_slug}_{aoi_slug}.{ext}"
+    return f"{var_slug}_{aoi_slug}.{ext}"
+
+
 def _build_gcs_prefix(
-    base_prefix: Optional[str], var_slug: str, year: int, season_slug: str
+    base_prefix: Optional[str], var_slug: str, year: int | str, season_slug: str
 ) -> str:
     parts = [base_prefix, var_slug, str(year), season_slug]
     cleaned = [str(p).strip("/") for p in parts if p is not None and str(p).strip()]
@@ -141,6 +155,12 @@ def _run(
                     var_slug_map[var_name] = _slugify_name(var_name)
 
             OPENEO_B11_INDICES = {"ndmi", "msi", "bsi"}
+            SOILGRIDS_VARS = {"bdod", "clay", "cfvo", "sand", "silt", "cec"}
+            GBIF_NAME = "gbif_occurrences"
+            STATIC_YEAR_LABEL = "static"
+            STATIC_SEASON_LABEL = "annual"
+            GBIF_YEAR_LABEL = "all"
+            GBIF_SEASON_LABEL = "all"
             disable_index_batch = os.getenv("SDM_DISABLE_OPENEO_INDEX_BATCH", "").strip().lower() in {
                 "1",
                 "true",
@@ -150,6 +170,7 @@ def _run(
             }
 
             tasks: list[dict[str, Any]] = []
+            static_added: set[str] = set()
             for season in seasons:
                 season_slug = _slugify_name(season)
                 for year in years:
@@ -175,6 +196,35 @@ def _run(
                         other_vars = other_vars + b11_vars
 
                     for var_name in other_vars:
+                        var_key = str(var_name).lower()
+                        if var_key in SOILGRIDS_VARS:
+                            if var_key in static_added:
+                                continue
+                            static_added.add(var_key)
+                            tasks.append(
+                                {
+                                    "type": "single",
+                                    "var_name": var_name,
+                                    "year": STATIC_YEAR_LABEL,
+                                    "season": STATIC_SEASON_LABEL,
+                                    "season_slug": _slugify_name(STATIC_SEASON_LABEL),
+                                }
+                            )
+                            continue
+                        if var_key == GBIF_NAME:
+                            if var_key in static_added:
+                                continue
+                            static_added.add(var_key)
+                            tasks.append(
+                                {
+                                    "type": "single",
+                                    "var_name": var_name,
+                                    "year": GBIF_YEAR_LABEL,
+                                    "season": GBIF_SEASON_LABEL,
+                                    "season_slug": _slugify_name(GBIF_SEASON_LABEL),
+                                }
+                            )
+                            continue
                         tasks.append(
                             {
                                 "type": "single",
@@ -201,11 +251,25 @@ def _run(
                 if task.get("type") == "single" and task.get("var_name"):
                     var_name = task["var_name"]
                     var_slug = var_slug_map.get(var_name, _slugify_name(var_name))
-                    filename = f"{var_slug}_{year}_{season_slug}_{aoi_slug}.tif"
+                    try:
+                        var_def = get_variable(var_name, job_cfg=job_cfg)
+                        output_ext = var_def.get("output_ext", "tif")
+                        include_time = var_def.get("include_time", True)
+                    except Exception:
+                        output_ext = "tif"
+                        include_time = True
+                    filename = _build_output_filename(
+                        var_slug,
+                        year,
+                        season_slug,
+                        aoi_slug,
+                        output_ext,
+                        include_time=include_time,
+                    )
                     error_entry["filename"] = filename
                     if job_cfg.storage.kind == "gcs_cog":
                         gcs_prefix = _build_gcs_prefix(
-                            job_cfg.storage.prefix, var_slug, int(year), season_slug
+                            job_cfg.storage.prefix, var_slug, year, season_slug
                         )
                         object_name = _build_gcs_object_name(gcs_prefix, filename)
                         error_entry["gcs_uri"] = f"gs://{job_cfg.storage.bucket}/{object_name}"
@@ -225,7 +289,7 @@ def _run(
                             dst.write(data, 1, window=window)
 
             def _process_single(
-                var_name: str, year: int, season: str, season_slug: str
+                var_name: str, year: int | str, season: str, season_slug: str
             ) -> tuple[list[dict], list[dict]]:
                 var_slug = var_slug_map.get(var_name, _slugify_name(var_name))
 
@@ -245,6 +309,9 @@ def _run(
                 var_def = get_variable(var_name, job_cfg=job_cfg)
                 extractor = var_def["extractor"]
                 transform_fn = var_def["transform"]
+                output_type = var_def.get("output_type", "raster")
+                output_ext = var_def.get("output_ext", "tif")
+                include_time = var_def.get("include_time", True)
 
                 # On Windows, cleanup can fail intermittently due to lingering file handles.
                 # Cleanup errors should not cause a successful variable run to be reported as failed.
@@ -272,21 +339,40 @@ def _run(
                         resolution_m=effective_res,
                         aoi_geom_target=geom_target,
                     )
-                    _progress("transformed to target CRS/resolution")
+                    if output_type == "raster":
+                        _progress("transformed to target CRS/resolution")
+                    else:
+                        _progress("transformed to target CRS")
                     _check_stop()
 
-                    filename = f"{var_slug}_{year}_{season_slug}_{aoi_slug}.tif"
+                    filename = _build_output_filename(
+                        var_slug,
+                        year,
+                        season_slug,
+                        aoi_slug,
+                        output_ext,
+                        include_time=include_time,
+                    )
                     tmp_suffix = uuid.uuid4().hex
                     if job_cfg.storage.kind == "gcs_cog":
                         local_output = None
-                        tmp_output = Path(tmp_dir) / f".{filename}.{tmp_suffix}.tmp.tif"
+                        tmp_output = Path(tmp_dir) / f".{filename}.{tmp_suffix}.tmp.{output_ext}"
                     else:
                         local_output = output_dir / filename
-                        tmp_output = output_dir / f".{filename}.{tmp_suffix}.tmp.tif"
+                        tmp_output = output_dir / f".{filename}.{tmp_suffix}.tmp.{output_ext}"
 
                     gcs_uri = None
                     try:
-                        write_cog(processed_path, tmp_output)
+                        if output_type == "raster":
+                            write_cog(processed_path, tmp_output)
+                        else:
+                            processed_path = Path(processed_path)
+                            try:
+                                processed_path.replace(tmp_output)
+                            except OSError:
+                                import shutil
+
+                                shutil.move(str(processed_path), str(tmp_output))
                         _check_stop()
 
                         if job_cfg.storage.kind == "gcs_cog":
@@ -316,7 +402,10 @@ def _run(
                                 pass
 
                     if local_output:
-                        _progress(f"wrote COG {local_output}")
+                        if output_type == "raster":
+                            _progress(f"wrote COG {local_output}")
+                        else:
+                            _progress(f"wrote vector output {local_output}")
                     else:
                         _progress("completed without local output (GCS only)")
                     _check_stop()
@@ -531,11 +620,17 @@ def _run(
 
             def _process_task(task: dict[str, Any]) -> tuple[list[dict], list[dict]]:
                 task_type = task.get("type")
-                year = int(task["year"])
+                year_raw = task.get("year")
+                try:
+                    year = int(year_raw)
+                except (TypeError, ValueError):
+                    year = year_raw
                 season = str(task["season"])
                 season_slug = str(task["season_slug"])
 
                 if task_type == "openeo_multi_b11":
+                    if not isinstance(year, int):
+                        raise ValueError(f"openeo batch requires numeric year, got {year_raw!r}")
                     return _process_openeo_b11_group(task["var_names"], year, season, season_slug)
 
                 if task_type == "single":

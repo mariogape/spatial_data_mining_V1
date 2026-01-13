@@ -29,6 +29,10 @@ class JobConfig(BaseModel):
     target_crs: str = Field(pattern=r"EPSG:\d+")
     resolution_m: float | None
     clcplus_input_dir: str | None = None
+    soilgrids_depth: str | None = None
+    soilgrids_stat: str | None = None
+    soilgrids_base_url: str | None = None
+    soilgrids_tile_index_path: str | None = None
     swi_collection_id: str | None = None
     swi_band: str | None = None
     swi_aggregation: str | None = None
@@ -46,6 +50,14 @@ class JobConfig(BaseModel):
     rgb_stac_url: str | None = None
     rgb_stac_collection_id: str | None = None
     rgb_prefilter: bool | None = None
+    gbif_format: str | None = None
+    gbif_max_records: int | None = None
+    gbif_taxon_key: int | None = None
+    gbif_dataset_key: str | None = None
+    gbif_basis_of_record: str | None = None
+    gbif_occurrence_status: str | None = None
+    gbif_kingdom_keys: List[int] | None = None
+    gbif_animal_class_keys: List[int] | None = None
     year: int | None = None
     years: List[int] | None = None
     season: str | None = None
@@ -68,6 +80,74 @@ class JobConfig(BaseModel):
         if value <= 0:
             raise ValueError("resolution_m must be positive when provided")
         return value
+
+    @field_validator("gbif_format")
+    @classmethod
+    def gbif_format_allowed(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        val = str(value).strip().lower()
+        if val in {"geojson", "json"}:
+            return "geojson"
+        if val in {"gpkg", "geopackage"}:
+            return "gpkg"
+        raise ValueError("gbif_format must be 'geojson' or 'gpkg'")
+
+    @field_validator("gbif_max_records")
+    @classmethod
+    def gbif_max_records_positive(cls, value: int | None):
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("gbif_max_records must be positive when provided")
+        return value
+
+    @field_validator("gbif_taxon_key")
+    @classmethod
+    def gbif_taxon_key_positive(cls, value: int | None):
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("gbif_taxon_key must be positive when provided")
+        return value
+
+    @field_validator("gbif_kingdom_keys")
+    @classmethod
+    def gbif_kingdom_keys_positive(cls, value: List[int] | None):
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("gbif_kingdom_keys cannot be empty when provided")
+        cleaned: List[int] = []
+        for key in value:
+            try:
+                key_int = int(key)
+            except Exception as exc:
+                raise ValueError(f"gbif_kingdom_keys must be integers, got {key!r}") from exc
+            if key_int <= 0:
+                raise ValueError(f"gbif_kingdom_keys must be positive, got {key_int}")
+            if key_int not in cleaned:
+                cleaned.append(key_int)
+        return cleaned
+
+    @field_validator("gbif_animal_class_keys")
+    @classmethod
+    def gbif_animal_class_keys_positive(cls, value: List[int] | None):
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("gbif_animal_class_keys cannot be empty when provided")
+        cleaned: List[int] = []
+        for key in value:
+            try:
+                key_int = int(key)
+            except Exception as exc:
+                raise ValueError(f"gbif_animal_class_keys must be integers, got {key!r}") from exc
+            if key_int <= 0:
+                raise ValueError(f"gbif_animal_class_keys must be positive, got {key_int}")
+            if key_int not in cleaned:
+                cleaned.append(key_int)
+        return cleaned
 
     @model_validator(mode="after")
     def normalize_aois(cls, model: "JobConfig") -> "JobConfig":
