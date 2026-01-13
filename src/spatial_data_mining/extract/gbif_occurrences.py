@@ -25,6 +25,7 @@ class GBIFOccurrenceExtractor:
     OFFSET_LIMIT = 200000
     DEFAULT_KINGDOM_KEYS = (1, 6)
     DEFAULT_ANIMAL_CLASS_KEYS = (212, 359)
+    MAX_TILE_DEPTH = 6
     KINGDOM_LABELS = {
         1: "Animalia",
         2: "Archaea",
@@ -184,6 +185,30 @@ class GBIFOccurrenceExtractor:
         labels = [self.CLASS_LABELS.get(k, str(k)) for k in self.animal_class_keys]
         return ", ".join(labels) if labels else "all"
 
+    def _estimate_count(self, params: dict[str, str | int], bbox_wkt: str) -> int:
+        count_params = dict(params)
+        count_params["geometry"] = bbox_wkt
+        count_params["limit"] = 1
+        count_params["offset"] = 0
+        data = self._request_with_retries(count_params)
+        try:
+            return int(data.get("count") or 0)
+        except Exception:
+            return 0
+
+    def _split_bounds(
+        self, bounds: tuple[float, float, float, float]
+    ) -> list[tuple[float, float, float, float]]:
+        minx, miny, maxx, maxy = bounds
+        midx = (minx + maxx) / 2.0
+        midy = (miny + maxy) / 2.0
+        return [
+            (minx, miny, midx, midy),
+            (midx, miny, maxx, midy),
+            (minx, midy, midx, maxy),
+            (midx, midy, maxx, maxy),
+        ]
+
     @staticmethod
     def _notify(cb: Optional[Callable[[str], None]], message: str) -> None:
         if cb:
@@ -306,95 +331,136 @@ class GBIFOccurrenceExtractor:
         results: list[dict] = []
         geometries: list[Point] = []
         fetched_total = 0
+        seen_ids: set[str] = set()
 
-        def _fetch_param_set(label: str, params: dict[str, str | int]) -> bool:
+        def _fetch_param_set(
+            label: str,
+            params: dict[str, str | int],
+            bounds_list: list[tuple[float, float, float, float]],
+        ) -> bool:
             nonlocal fetched_total
-            total = None
-            params = dict(params)
-            params["offset"] = 0
-            while True:
-                check_cancelled(should_stop)
-                data = self._request_with_retries(params)
-                page_results = data.get("results") or []
-                if total is None:
-                    total = data.get("count")
-                    if (
-                        total is not None
-                        and self.max_records is None
-                        and int(total) > self.OFFSET_LIMIT
-                    ):
-                        raise RuntimeError(
-                            "GBIF result set exceeds API paging limit; set gbif_max_records "
-                            "or use the GBIF download service for large requests."
-                        )
-                if not page_results:
-                    break
+            base_params = dict(params)
+            for bounds in bounds_list:
+                total = None
+                tile_params = dict(base_params)
+                tile_params["geometry"] = self._bbox_wkt(bounds)
+                tile_params["offset"] = 0
+                while True:
+                    check_cancelled(should_stop)
+                    data = self._request_with_retries(tile_params)
+                    page_results = data.get("results") or []
+                    if total is None:
+                        total = data.get("count")
+                        if (
+                            total is not None
+                            and self.max_records is None
+                            and int(total) > self.OFFSET_LIMIT
+                        ):
+                            raise RuntimeError(
+                                "GBIF result set exceeds API paging limit; set gbif_max_records "
+                                "or use the GBIF download service for large requests."
+                            )
+                    if not page_results:
+                        break
 
-                for rec in page_results:
-                    if self.max_records is not None and fetched_total >= self.max_records:
+                    for rec in page_results:
+                        if self.max_records is not None and fetched_total >= self.max_records:
+                            self._notify(
+                                progress_cb,
+                                f"GBIF: stopping at max_records={self.max_records}",
+                            )
+                            return False
+                        rec_key = None
+                        if self.kingdom_keys:
+                            rec_key = rec.get("kingdomKey")
+                            try:
+                                rec_key = int(rec_key)
+                            except Exception:
+                                continue
+                            if rec_key not in self.kingdom_keys:
+                                continue
+                        if self.animal_class_keys and rec_key == 1:
+                            rec_class = rec.get("classKey")
+                            try:
+                                rec_class = int(rec_class)
+                            except Exception:
+                                continue
+                            if rec_class not in self.animal_class_keys:
+                                continue
+                        lat = rec.get("decimalLatitude")
+                        lon = rec.get("decimalLongitude")
+                        if lat is None or lon is None:
+                            continue
+                        try:
+                            point = Point(float(lon), float(lat))
+                        except Exception:
+                            continue
+                        if not geom_prep.intersects(point):
+                            continue
+                        row = self._normalize_record(rec)
+                        record_id = row.get("gbifID") or row.get("occurrenceID")
+                        if record_id is not None:
+                            record_id = str(record_id)
+                            if record_id in seen_ids:
+                                continue
+                            seen_ids.add(record_id)
+                        results.append(row)
+                        geometries.append(point)
+                        fetched_total += 1
+
+                    if total:
                         self._notify(
                             progress_cb,
-                            f"GBIF: stopping at max_records={self.max_records}",
+                            f"GBIF ({label}): fetched {min(tile_params['offset'] + len(page_results), total)} / {total} records (offset {tile_params['offset']})",
                         )
-                        return False
-                    rec_key = None
-                    if self.kingdom_keys:
-                        rec_key = rec.get("kingdomKey")
-                        try:
-                            rec_key = int(rec_key)
-                        except Exception:
-                            continue
-                        if rec_key not in self.kingdom_keys:
-                            continue
-                    if self.animal_class_keys and rec_key == 1:
-                        rec_class = rec.get("classKey")
-                        try:
-                            rec_class = int(rec_class)
-                        except Exception:
-                            continue
-                        if rec_class not in self.animal_class_keys:
-                            continue
-                    lat = rec.get("decimalLatitude")
-                    lon = rec.get("decimalLongitude")
-                    if lat is None or lon is None:
-                        continue
-                    try:
-                        point = Point(float(lon), float(lat))
-                    except Exception:
-                        continue
-                    if not geom_prep.intersects(point):
-                        continue
-                    row = self._normalize_record(rec)
-                    results.append(row)
-                    geometries.append(point)
-                    fetched_total += 1
+                    else:
+                        self._notify(
+                            progress_cb,
+                            f"GBIF ({label}): fetched {tile_params['offset'] + len(page_results)} records (offset {tile_params['offset']})",
+                        )
 
-                if total:
-                    self._notify(
-                        progress_cb,
-                        f"GBIF ({label}): fetched {min(params['offset'] + len(page_results), total)} / {total} records (offset {params['offset']})",
-                    )
-                else:
-                    self._notify(
-                        progress_cb,
-                        f"GBIF ({label}): fetched {params['offset'] + len(page_results)} records (offset {params['offset']})",
-                    )
+                    if data.get("endOfRecords"):
+                        break
 
-                if data.get("endOfRecords"):
-                    break
-
-                next_offset = params["offset"] + self.page_limit
-                if next_offset >= self.OFFSET_LIMIT:
-                    raise RuntimeError(
-                        "GBIF paging limit reached; set gbif_max_records "
-                        "or use the GBIF download service for large requests."
-                    )
-                params["offset"] = next_offset
+                    next_offset = tile_params["offset"] + self.page_limit
+                    if next_offset >= self.OFFSET_LIMIT:
+                        raise RuntimeError(
+                            "GBIF paging limit reached; set gbif_max_records "
+                            "or use the GBIF download service for large requests."
+                        )
+                    tile_params["offset"] = next_offset
             return True
+
+        def _build_tiles(
+            params: dict[str, str | int],
+            bounds: tuple[float, float, float, float],
+            depth: int = 0,
+        ) -> list[tuple[float, float, float, float]]:
+            count = self._estimate_count(params, self._bbox_wkt(bounds))
+            if count == 0:
+                return []
+            allow_tiling = self.max_records is None or self.max_records > self.OFFSET_LIMIT
+            if count <= self.OFFSET_LIMIT or not allow_tiling:
+                return [bounds]
+            if depth >= self.MAX_TILE_DEPTH:
+                raise RuntimeError(
+                    "GBIF result set exceeds API paging limit even after tiling; "
+                    "set gbif_max_records, reduce AOI, or use the GBIF download service."
+                )
+            tiles: list[tuple[float, float, float, float]] = []
+            for sub_bounds in self._split_bounds(bounds):
+                tiles.extend(_build_tiles(params, sub_bounds, depth + 1))
+            return tiles
 
         for label, params in param_sets:
             self._notify(progress_cb, f"GBIF: querying {label}")
-            if not _fetch_param_set(label, params):
+            tiles = _build_tiles(params, geom.bounds)
+            if len(tiles) > 1:
+                self._notify(
+                    progress_cb,
+                    f"GBIF: tiling AOI into {len(tiles)} parts to avoid API paging limits.",
+                )
+            if not _fetch_param_set(label, params, tiles):
                 break
 
         tmp_dir = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
