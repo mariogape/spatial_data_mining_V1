@@ -147,7 +147,7 @@ VARIABLE_METADATA = {
         "source": "GBIF Occurrence API",
         "native_resolution_m": None,
         "calculation": "Occurrence point records filtered by AOI",
-        "notes": "Includes species, taxonomic ranks (genus/family/order/class/phylum/kingdom), and eventDate/year when available. Defaults to full history (no date filter) with Animalia (Aves/Mammalia) and Plantae only.",
+        "notes": "Includes species, taxonomic ranks (genus/family/order/class/phylum/kingdom), and eventDate/year when available. Defaults to full history (no date filter) with Animalia (Aves/Mammalia) + Plantae and commercial-use licenses (CC0/CC BY variants; NC excluded).",
         "temporal_coverage": {"start_year": 1900, "end_year": "present"},
         "temporal_resolution": "event",
         "season_options": ["winter", "spring", "summer", "autumn", "annual"],

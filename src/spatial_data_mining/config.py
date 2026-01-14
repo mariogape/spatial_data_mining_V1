@@ -58,6 +58,7 @@ class JobConfig(BaseModel):
     gbif_occurrence_status: str | None = None
     gbif_kingdom_keys: List[int] | None = None
     gbif_animal_class_keys: List[int] | None = None
+    gbif_allowed_licenses: List[str] | None = None
     year: int | None = None
     years: List[int] | None = None
     season: str | None = None
@@ -147,6 +148,22 @@ class JobConfig(BaseModel):
                 raise ValueError(f"gbif_animal_class_keys must be positive, got {key_int}")
             if key_int not in cleaned:
                 cleaned.append(key_int)
+        return cleaned
+
+    @field_validator("gbif_allowed_licenses")
+    @classmethod
+    def gbif_allowed_licenses_nonempty(cls, value: List[str] | None):
+        if value is None:
+            return None
+        cleaned: List[str] = []
+        for lic in value:
+            if lic is None:
+                continue
+            raw = str(lic).strip()
+            if raw:
+                cleaned.append(raw)
+        if not cleaned:
+            raise ValueError("gbif_allowed_licenses cannot be empty when provided")
         return cleaned
 
     @model_validator(mode="after")

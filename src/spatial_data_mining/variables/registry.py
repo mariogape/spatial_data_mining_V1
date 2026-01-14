@@ -149,6 +149,7 @@ VARIABLES = {
             occurrence_status=getattr(job, "gbif_occurrence_status", None),
             kingdom_keys=getattr(job, "gbif_kingdom_keys", None),
             animal_class_keys=getattr(job, "gbif_animal_class_keys", None),
+            allowed_licenses=getattr(job, "gbif_allowed_licenses", None),
             max_records=getattr(job, "gbif_max_records", None),
         ),
         "transform_factory": lambda job=None: partial(
