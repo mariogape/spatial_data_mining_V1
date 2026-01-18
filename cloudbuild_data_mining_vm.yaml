@@ -1,0 +1,290 @@
+# ========================================
+# TEMPLATE: Data Mining VM Deployment
+# ========================================
+#
+# Based on: cloudbuild-training-Unet-embeddings.yaml (WORKING REFERENCE)
+#
+# This template follows Darwin Geospatial's 6 Cloud Build Standards:
+# 1. ✅ All parameters in substitutions block
+# 2. ✅ Layered Docker builds (base + code)
+# 3. ✅ Zone fallback (3+ zones for VM availability)
+# 4. ✅ Auto-delete (max runtime + instance termination)
+# 5. ✅ Service accounts always specified
+# 6. ✅ Spot instances (70% cost reduction)
+#
+# USAGE:
+#   1. Create your job config: config/data_mining_jobs/my_job.json
+#   2. Submit: gcloud builds submit --config=Data_Mining_VM.yaml \
+#                --substitutions=_JOB_CONFIG_FILE=config/data_mining_jobs/my_job.json
+#
+# ========================================
+
+# ========================================
+# SUBSTITUTIONS (Standard 1: All parameters here)
+# ========================================
+substitutions:
+  # ====================
+  # Infrastructure (STANDARD - Keep as-is)
+  # ====================
+  _REGION: 'europe-west1'
+  _SERVICE_ACCOUNT: 'projects/openpas-dev/serviceAccounts/sa-ci-cd@openpas-dev.iam.gserviceaccount.com'
+  _VM_SERVICE_ACCOUNT: 'sa-ci-cd@openpas-dev.iam.gserviceaccount.com'
+
+  # ====================
+  # Docker Configuration (Standard 2: Layered builds)
+  # ====================
+  _UPDATE_BASE: 'false'                   # Set to 'true' ONLY when requirements.txt changes
+  _DOCKERFILE_BASE: 'docker/data_mining/Dockerfile.base'
+  _DOCKERFILE: 'docker/data_mining/Dockerfile'
+  _IMAGE_NAME_BASE: 'spatial-data-mining-base'
+  _IMAGE_NAME: 'spatial-data-mining'
+
+  # ====================
+  # VM Configuration (Standards 3, 4, 6)
+  # ====================
+  _MACHINE_TYPE: 'f1-micro'               # 1 vCPU, 0.6GB RAM (ABSOLUTE MINIMUM - cheapest possible!)
+  _BOOT_DISK_SIZE: '10GB'                 # Bare minimum disk (just enough for temp files)
+  _USE_SPOT: 'true'                       # Standard 6: Use Spot (70% cheaper!)
+  _MAX_RUN_DURATION: '24h'                # Standard 4: Auto-delete after max time
+
+  # Standard 3: Zone fallback (europe-only to avoid egress costs)
+  _DATA_MINING_ZONES: 'europe-west1-d,europe-west1-c,europe-west1-b,europe-west4-a,europe-west4-b,europe-west4-c,europe-west2-a,europe-west2-b,europe-west2-c'
+
+  # ====================
+  # Data Mining Configuration - CUSTOMIZE THESE
+  # ====================
+  _RUN_PIPELINE: 'true'                   # Set to 'false' to build images only
+  _JOB_CONFIG_FILE: 'config/data_mining_jobs/example_job.json'  # Path to JSON config
+  _BASE_CONFIG_FILE: 'config/base.yaml'   # Path to base YAML config
+
+  # ====================
+  # Startup Script - STANDARD (Keep as-is)
+  # ====================
+  _STARTUP_SCRIPT: 'cloudbuild-builds/startup_data_mining.sh'
+
+# ========================================
+# OPTIONS (STANDARD - Keep as-is)
+# ========================================
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+# ========================================
+# STEPS
+# ========================================
+steps:
+  # ========================================
+  # Step 1: Build Base Image (Conditional - Standard 2)
+  # ========================================
+  # Only rebuilds when _UPDATE_BASE=true (dependencies changed)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-base-image'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+
+        # IMPORTANT: Use $$ for bash variables!
+        UPDATE_BASE="$(echo "${_UPDATE_BASE}" | tr '[:upper:]' '[:lower:]')"
+
+        if [[ "$$UPDATE_BASE" != "true" ]]; then
+          echo "⏭️  Skipping base image build (_UPDATE_BASE=false)"
+          echo "ℹ️  Base image updates only needed when dependencies change"
+          exit 0
+        fi
+
+        echo "=========================================="
+        echo "🔨 Building base image with dependencies"
+        echo "=========================================="
+        echo "Dockerfile: ${_DOCKERFILE_BASE}"
+        echo "Image: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME_BASE}:latest"
+
+        docker build \
+          --platform=linux/amd64 \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME_BASE}:latest \
+          -f ${_DOCKERFILE_BASE} \
+          .
+
+        echo "📤 Pushing base image..."
+        docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME_BASE}:latest
+
+        echo "✅ Base image built and pushed successfully"
+    waitFor: ['-']
+
+  # ========================================
+  # Step 2: Build Code Layer (Always - Standard 2)
+  # ========================================
+  # Fast rebuild (~20 seconds) - runs every commit
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-code-layer'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+
+        echo "=========================================="
+        echo "⚡ Building code layer from base image"
+        echo "=========================================="
+        echo "Base: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME_BASE}:latest"
+        echo "Image: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME}:${SHORT_SHA}"
+
+        docker build \
+          --platform=linux/amd64 \
+          --build-arg BASE_IMAGE=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME_BASE}:latest \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME}:${SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME}:latest \
+          -f ${_DOCKERFILE} \
+          .
+
+        echo "📤 Pushing code layer..."
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${PROJECT_ID}-docker/${_IMAGE_NAME}
+
+        echo "✅ Code layer built and pushed (~20 seconds)"
+    waitFor: ['build-base-image']
+
+  # ========================================
+  # Step 3: Create Data Mining VM (Standards 3, 4, 6)
+  # ========================================
+  # - Standard 3: Zone fallback for VM availability
+  # - Standard 4: Auto-delete after max runtime
+  # - Standard 6: Spot instances (70% cheaper)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'create-data-mining-vm'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+
+        # IMPORTANT: Use $$ for bash variables!
+        RUN_PIPELINE="$(echo "${_RUN_PIPELINE}" | tr '[:upper:]' '[:lower:]')"
+
+        if [[ "$$RUN_PIPELINE" != "true" ]]; then
+          echo "⏭️  Skipping pipeline execution (_RUN_PIPELINE=$$RUN_PIPELINE)"
+          exit 0
+        fi
+
+        # Generate unique VM name
+        VM_NAME="data-mining-$(date +%Y%m%d-%H%M%S)"
+
+        echo "=========================================="
+        echo "🖥️  Creating Data Mining VM"
+        echo "=========================================="
+        echo "VM Name      : $$VM_NAME"
+        echo "Machine Type : ${_MACHINE_TYPE}"
+        echo "Disk Size    : ${_BOOT_DISK_SIZE}"
+        echo "Max Duration : ${_MAX_RUN_DURATION} (Standard 4: auto-delete)"
+        echo "Spot Instance: ${_USE_SPOT} (Standard 6: 70% cheaper)"
+        echo "Job Config   : ${_JOB_CONFIG_FILE}"
+        echo ""
+
+        # Prepare startup script with variable substitution
+        cp "${_STARTUP_SCRIPT}" /tmp/startup-script.sh
+        chmod +x /tmp/startup-script.sh
+
+        REGION="${_REGION}"
+        REPOSITORY="${PROJECT_ID}-docker"
+        IMAGE_NAME="${_IMAGE_NAME}"
+        IMAGE_URI="$$REGION-docker.pkg.dev/${PROJECT_ID}/$$REPOSITORY/$$IMAGE_NAME:${SHORT_SHA}"
+
+        # Replace placeholders in startup script (using $$ for Cloud Build)
+        sed -i "s|__REGION__|${_REGION}|g" /tmp/startup-script.sh
+        sed -i "s|__IMAGE_URI__|$$IMAGE_URI|g" /tmp/startup-script.sh
+        sed -i "s|__JOB_CONFIG_FILE__|${_JOB_CONFIG_FILE}|g" /tmp/startup-script.sh
+        sed -i "s|__BASE_CONFIG_FILE__|${_BASE_CONFIG_FILE}|g" /tmp/startup-script.sh
+        sed -i "s|__VM_NAME__|$$VM_NAME|g" /tmp/startup-script.sh
+        sed -i "s|__CLOUDBUILD_YAML__|Data_Mining_VM.yaml|g" /tmp/startup-script.sh
+        sed -i "s|__BUILD_ID__|${BUILD_ID}|g" /tmp/startup-script.sh
+        sed -i "s|__GIT_COMMIT__|${SHORT_SHA}|g" /tmp/startup-script.sh
+        sed -i "s|__PIPELINE_TITLE__|Spatial Data Mining Pipeline|g" /tmp/startup-script.sh
+        sed -i "s|__PROJECT_ID__|${PROJECT_ID}|g" /tmp/startup-script.sh
+
+        # Export variables for create_vm.sh helper script (Standard 3: Zone fallback)
+        export VM_NAME
+        export STARTUP_SCRIPT="/tmp/startup-script.sh"
+        export TRAINING_ZONES="${_DATA_MINING_ZONES}"
+        export INSTANCE_LABELS="type=data-mining,build=${SHORT_SHA},pipeline=spatial-etl"
+        export MAX_RUN_DURATION="${_MAX_RUN_DURATION}"
+        export _MACHINE_TYPE="${_MACHINE_TYPE}"
+        export _GPU_TYPE=""  # No GPU needed for data mining
+        export _GPU_COUNT="0"
+        export _BOOT_DISK_SIZE="${_BOOT_DISK_SIZE}"
+        export _VM_SERVICE_ACCOUNT="${_VM_SERVICE_ACCOUNT}"
+        export _USE_SPOT="${_USE_SPOT}"
+
+        # Use helper script for zone fallback (Standard 3)
+        bash cloudbuild-builds/create_vm.sh
+    waitFor: ['build-code-layer']
+
+  # ========================================
+  # Step 4: Monitor Pipeline
+  # ========================================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'monitor-pipeline'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+
+        RUN_PIPELINE="$(echo "${_RUN_PIPELINE}" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$$RUN_PIPELINE" != "true" ]]; then
+          echo "⏭️  Skipping pipeline monitoring"
+          exit 0
+        fi
+
+        # Get actual zone from VM creation step
+        ACTUAL_ZONE=$(cat /workspace/vm_zone.txt)
+
+        echo "=========================================="
+        echo "📊 Data Mining Pipeline Started on VM"
+        echo "=========================================="
+        echo "Zone: $$ACTUAL_ZONE"
+        echo "Job Config: ${_JOB_CONFIG_FILE}"
+        echo ""
+        echo "Pipeline runs via startup script (no SSH needed)"
+        echo "VM will auto-delete after ${_MAX_RUN_DURATION} max"
+        echo ""
+        echo "Output will be uploaded to GCS bucket specified in job config"
+        echo "=========================================="
+    waitFor: ['create-data-mining-vm']
+
+  # ========================================
+  # Step 5: Output Summary
+  # ========================================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'output-summary'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        REGION="${_REGION}"
+        REPOSITORY="${PROJECT_ID}-docker"
+        IMAGE_NAME="${_IMAGE_NAME}"
+
+        echo "=========================================="
+        echo "✅ Data Mining Pipeline Launched"
+        echo "=========================================="
+        echo "Docker Image:"
+        echo "  $$REGION-docker.pkg.dev/${PROJECT_ID}/$$REPOSITORY/$$IMAGE_NAME:${SHORT_SHA}"
+        echo ""
+        echo "Job Configuration:"
+        echo "  ${_JOB_CONFIG_FILE}"
+        echo ""
+        echo "💰 VM will auto-delete after ${_MAX_RUN_DURATION} max"
+        echo "📊 Monitor pipeline via Cloud Logging"
+        echo "🔍 View logs: gcloud logging read 'resource.type=gce_instance AND labels.type=data-mining' --limit 50"
+        echo "=========================================="
+    waitFor: ['monitor-pipeline']
+
+# ========================================
+# SERVICE ACCOUNT (Standard 5: Always specify)
+# ========================================
+serviceAccount: '${_SERVICE_ACCOUNT}'
+
+# ========================================
+# TIMEOUT (STANDARD)
+# ========================================
+timeout: '14400s'  # 4 hours for entire Cloud Build pipeline (VM runs longer via MAX_RUN_DURATION)

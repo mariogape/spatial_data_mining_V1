@@ -1,0 +1,42 @@
+{
+  "job_name": "ndvi_spain_2023_summer",
+  "description": "Extract NDVI for Spanish regions - Summer 2023",
+
+  "aoi_paths": [
+    "gs://your-bucket/aoi/region1.geojson",
+    "gs://your-bucket/aoi/region2.geojson"
+  ],
+
+  "spatial_config": {
+    "target_crs": "EPSG:4326",
+    "resolution_m": 20,
+    "use_native_resolution": false
+  },
+
+  "temporal_config": {
+    "years": [2023],
+    "seasons": ["summer"]
+  },
+
+  "variables": [
+    "ndvi",
+    "ndmi",
+    "bsi"
+  ],
+
+  "storage": {
+    "kind": "gcs_cog",
+    "bucket": "your-output-bucket",
+    "prefix": "spatial_outputs/spain/2023"
+  },
+
+  "variable_specific": {
+    "clcplus_input_dir": null,
+    "swi_date": null,
+    "rgb_date": null
+  },
+
+  "performance": {
+    "max_concurrent_tasks": 2
+  }
+}
